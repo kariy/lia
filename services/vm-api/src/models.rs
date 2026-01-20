@@ -215,6 +215,34 @@ fn default_per_page() -> u32 {
     20
 }
 
+// Boot progress stages for VM startup
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootStage {
+    CreatingVm,
+    WaitingForSocket,
+    ConfiguringVm,
+    BootingVm,
+    ConnectingAgent,
+    InitializingClaude,
+    Ready,
+}
+
+impl BootStage {
+    /// Human-readable message for UI display
+    pub fn message(&self) -> &'static str {
+        match self {
+            BootStage::CreatingVm => "Starting VM...",
+            BootStage::WaitingForSocket => "Starting VM...",
+            BootStage::ConfiguringVm => "Configuring VM...",
+            BootStage::BootingVm => "Booting...",
+            BootStage::ConnectingAgent => "Connecting...",
+            BootStage::InitializingClaude => "Initializing Claude...",
+            BootStage::Ready => "Ready",
+        }
+    }
+}
+
 // WebSocket message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -222,6 +250,7 @@ pub enum WsMessage {
     Output { data: String, timestamp: i64 },
     Input { data: String },
     Status { status: TaskStatus, exit_code: Option<i32> },
+    Progress { stage: BootStage, message: String },
     Error { message: String },
     Ping,
     Pong,
@@ -244,6 +273,10 @@ pub enum VsockMessage {
     },
     Exit {
         code: i32,
+    },
+    /// Error message from the sidecar (e.g., Claude Code failed to start)
+    Error {
+        message: String,
     },
     Heartbeat,
 }

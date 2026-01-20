@@ -61,6 +61,9 @@ pub enum VsockMessage {
     Exit {
         code: i32,
     },
+    Error {
+        message: String,
+    },
     Heartbeat,
 }
 
@@ -560,6 +563,10 @@ fn read_streaming_output(
                         results.exit_code = Some(code);
                         println!("[EXIT] code={}", code);
                         break;
+                    }
+                    Ok(VsockMessage::Error { message }) => {
+                        println!("[SIDECAR ERROR] {}", message);
+                        results.errors.push(format!("Sidecar error: {}", message));
                     }
                     Ok(_) => {}
                     Err(e) => {

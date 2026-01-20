@@ -14,8 +14,8 @@ use uuid::Uuid;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::models::{
-    is_valid_repo_format, CreateTaskRequest, ListTasksQuery, TaskListResponse, TaskResponse,
-    TaskStatus, WsMessage,
+    is_valid_repo_format, BootStage, CreateTaskRequest, ListTasksQuery, TaskListResponse,
+    TaskResponse, TaskStatus, WsMessage,
 };
 use crate::vsock::VsockRelay;
 use crate::AppState;
@@ -73,17 +73,57 @@ pub async fn create_task(
     // Update status to starting
     db::update_task_status(&state.db, task_id, TaskStatus::Starting, Some(&vm_id)).await?;
 
+    // Get or create WebSocket channel for progress updates
+    let channel = state.ws_registry.get_or_create(task_id).await;
+
+    // Helper to send progress updates
+    async fn send_progress(
+        channel: &crate::ws::TaskChannel,
+        stage: BootStage,
+    ) {
+        let msg = WsMessage::Progress {
+            stage,
+            message: stage.message().to_string(),
+        };
+        channel.send(msg).await;
+    }
+
     // Spawn VM creation in background
     let state_clone = state.clone();
     let prompt = req.prompt.clone();
     let files = req.files.clone();
     let task_config = req.config.clone();
     let ssh_public_key = req.ssh_public_key.clone();
+    let channel_clone = channel.clone();
 
     tokio::spawn(async move {
+        // Send initial progress
+        send_progress(&channel_clone, BootStage::CreatingVm).await;
+
+        // Create a channel to receive progress updates from the sync callback
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<BootStage>();
+
+        // Create progress callback that sends to channel
+        let progress_callback: crate::firecracker::ProgressCallback = Box::new(move |stage| {
+            let _ = progress_tx.send(stage);
+        });
+
+        // Spawn a task to forward progress updates to WebSocket
+        let channel_for_progress = channel_clone.clone();
+        let _progress_forwarder = tokio::spawn(async move {
+            while let Some(stage) = progress_rx.recv().await {
+                send_progress(&channel_for_progress, stage).await;
+            }
+        });
+
         match state_clone
             .vm_manager
-            .create_vm(task_id, task_config.as_ref(), ssh_public_key.as_deref())
+            .create_vm_with_progress(
+                task_id,
+                task_config.as_ref(),
+                ssh_public_key.as_deref(),
+                Some(progress_callback),
+            )
             .await
         {
             Ok(vm_info) => {
@@ -109,6 +149,9 @@ pub async fn create_task(
                     tracing::error!("Failed to update task IP address: {}", e);
                 }
 
+                // Progress: connecting to agent
+                send_progress(&channel_clone, BootStage::ConnectingAgent).await;
+
                 // Start vsock relay
                 let vsock_path = state_clone.vm_manager.get_vsock_path(&vm_info.vm_id);
                 let relay =
@@ -120,10 +163,20 @@ pub async fn create_task(
                 {
                     Ok(_input_tx) => {
                         tracing::info!("vsock relay started for task {}", task_id);
-                        // Store input_tx for later use with WebSocket input
+                        // Progress: initializing Claude
+                        send_progress(&channel_clone, BootStage::InitializingClaude).await;
+                        // Progress: ready (after a brief delay to allow Claude to start)
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        send_progress(&channel_clone, BootStage::Ready).await;
                     }
                     Err(e) => {
                         tracing::error!("Failed to start vsock relay: {}", e);
+                        // Send error message
+                        channel_clone
+                            .send(WsMessage::Error {
+                                message: format!("Failed to connect to agent: {}", e),
+                            })
+                            .await;
                         let _ = db::complete_task(
                             &state_clone.db,
                             task_id,
@@ -136,6 +189,12 @@ pub async fn create_task(
             }
             Err(e) => {
                 tracing::error!("Failed to create VM: {}", e);
+                // Send error message
+                channel_clone
+                    .send(WsMessage::Error {
+                        message: format!("Failed to start VM: {}", e),
+                    })
+                    .await;
                 let _ = db::complete_task(
                     &state_clone.db,
                     task_id,

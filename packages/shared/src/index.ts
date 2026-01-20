@@ -80,11 +80,36 @@ export const TaskResponseSchema = z.object({
 
 export type TaskResponse = z.infer<typeof TaskResponseSchema>;
 
+// VM boot progress stages (verbose for vm-api, simplified for display)
+export const BootStage = {
+  CreatingVm: "creating_vm",
+  WaitingForSocket: "waiting_for_socket",
+  ConfiguringVm: "configuring_vm",
+  BootingVm: "booting_vm",
+  ConnectingAgent: "connecting_agent",
+  InitializingClaude: "initializing_claude",
+  Ready: "ready",
+} as const;
+
+export type BootStage = (typeof BootStage)[keyof typeof BootStage];
+
+// Human-readable boot stage messages for UI display
+export const BootStageMessages: Record<BootStage, string> = {
+  creating_vm: "Starting VM...",
+  waiting_for_socket: "Starting VM...",
+  configuring_vm: "Configuring VM...",
+  booting_vm: "Booting...",
+  connecting_agent: "Connecting...",
+  initializing_claude: "Initializing Claude...",
+  ready: "Ready",
+};
+
 // WebSocket message types
 export const WsMessageType = {
   Output: "output",
   Input: "input",
   Status: "status",
+  Progress: "progress",
   Error: "error",
   Ping: "ping",
   Pong: "pong",
@@ -110,6 +135,20 @@ export const WsStatusMessageSchema = z.object({
   exit_code: z.number().nullable().optional(),
 });
 
+export const WsProgressMessageSchema = z.object({
+  type: z.literal("progress"),
+  stage: z.enum([
+    "creating_vm",
+    "waiting_for_socket",
+    "configuring_vm",
+    "booting_vm",
+    "connecting_agent",
+    "initializing_claude",
+    "ready",
+  ]),
+  message: z.string(), // Human-readable message for UI
+});
+
 export const WsErrorMessageSchema = z.object({
   type: z.literal("error"),
   message: z.string(),
@@ -127,6 +166,7 @@ export const WsMessageSchema = z.discriminatedUnion("type", [
   WsOutputMessageSchema,
   WsInputMessageSchema,
   WsStatusMessageSchema,
+  WsProgressMessageSchema,
   WsErrorMessageSchema,
   WsPingMessageSchema,
   WsPongMessageSchema,
@@ -136,6 +176,7 @@ export type WsMessage = z.infer<typeof WsMessageSchema>;
 export type WsOutputMessage = z.infer<typeof WsOutputMessageSchema>;
 export type WsInputMessage = z.infer<typeof WsInputMessageSchema>;
 export type WsStatusMessage = z.infer<typeof WsStatusMessageSchema>;
+export type WsProgressMessage = z.infer<typeof WsProgressMessageSchema>;
 export type WsErrorMessage = z.infer<typeof WsErrorMessageSchema>;
 
 // API error response

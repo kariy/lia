@@ -31,7 +31,23 @@ pub enum VsockMessage {
     Exit {
         code: i32,
     },
+    /// Error message sent to host when something fails
+    Error {
+        message: String,
+    },
     Heartbeat,
+}
+
+/// Send an error message to the host via vsock
+fn send_error(writer: &mut std::fs::File, message: &str) {
+    tracing::error!("Sending error to host: {}", message);
+    let msg = VsockMessage::Error {
+        message: message.to_string(),
+    };
+    if let Ok(json) = serde_json::to_string(&msg) {
+        let _ = writer.write_all((json + "\n").as_bytes());
+        let _ = writer.flush();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,10 +130,18 @@ fn main() -> Result<()> {
 
     let mut line = String::new();
     let mut reader = BufReader::new(&vsock_reader);
-    reader.read_line(&mut line)?;
+    if let Err(e) = reader.read_line(&mut line) {
+        send_error(&mut vsock_writer, &format!("Failed to read init message: {}", e));
+        anyhow::bail!("Failed to read init message: {}", e);
+    }
 
-    let init_msg: VsockMessage =
-        serde_json::from_str(&line).context("Failed to parse init message")?;
+    let init_msg: VsockMessage = match serde_json::from_str(&line) {
+        Ok(msg) => msg,
+        Err(e) => {
+            send_error(&mut vsock_writer, &format!("Failed to parse init message: {} (raw: {})", e, line.trim()));
+            anyhow::bail!("Failed to parse init message: {}", e);
+        }
+    };
 
     let (api_key, prompt, files) = match init_msg {
         VsockMessage::Init {
@@ -125,7 +149,10 @@ fn main() -> Result<()> {
             prompt,
             files,
         } => (api_key, prompt, files),
-        _ => anyhow::bail!("Expected Init message, got {:?}", init_msg),
+        _ => {
+            send_error(&mut vsock_writer, &format!("Expected Init message, got {:?}", init_msg));
+            anyhow::bail!("Expected Init message, got {:?}", init_msg);
+        }
     };
 
     info!("Received init message, starting Claude Code");
@@ -135,22 +162,35 @@ fn main() -> Result<()> {
         for file in files {
             let path = std::path::Path::new("/workspace").join(&file.name);
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
+                if let Err(e) = std::fs::create_dir_all(parent) {
+                    send_error(&mut vsock_writer, &format!("Failed to create directory {}: {}", parent.display(), e));
+                    anyhow::bail!("Failed to create directory: {}", e);
+                }
             }
-            std::fs::write(&path, &file.content)?;
+            if let Err(e) = std::fs::write(&path, &file.content) {
+                send_error(&mut vsock_writer, &format!("Failed to write file {}: {}", path.display(), e));
+                anyhow::bail!("Failed to write file: {}", e);
+            }
             info!("Wrote file: {}", path.display());
         }
+    }
+
+    // Check if Claude binary exists
+    let claude_path = "/home/claude/.local/bin/claude";
+    if !std::path::Path::new(claude_path).exists() {
+        send_error(&mut vsock_writer, &format!("Claude binary not found at {}", claude_path));
+        anyhow::bail!("Claude binary not found");
     }
 
     // Spawn Claude Code process with piped I/O
     // Use stream-json for both input and output for structured bidirectional communication
     // Run as 'claude' user to allow --dangerously-skip-permissions (which doesn't work as root)
-    let mut child = Command::new("sudo")
+    let mut child = match Command::new("sudo")
         .arg("-u")
         .arg("claude")
         .arg("-E")  // Preserve environment (for ANTHROPIC_API_KEY)
         .arg("--")
-        .arg("/home/claude/.local/bin/claude")
+        .arg(claude_path)
         .arg("--print")
         .arg("--input-format")
         .arg("stream-json")
@@ -166,7 +206,13 @@ fn main() -> Result<()> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("Failed to spawn Claude Code")?;
+    {
+        Ok(child) => child,
+        Err(e) => {
+            send_error(&mut vsock_writer, &format!("Failed to spawn Claude Code: {}", e));
+            anyhow::bail!("Failed to spawn Claude Code: {}", e);
+        }
+    };
 
     let mut child_stdin = child.stdin.take().expect("Failed to get stdin");
     let child_stdout = child.stdout.take().expect("Failed to get stdout");
@@ -175,10 +221,14 @@ fn main() -> Result<()> {
     // Send initial prompt to Claude via stdin as JSON
     let initial_msg = ClaudeInputMessage::user(prompt);
     let initial_json = serde_json::to_string(&initial_msg)? + "\n";
-    child_stdin
-        .write_all(initial_json.as_bytes())
-        .context("Failed to send initial prompt to Claude")?;
-    child_stdin.flush()?;
+    if let Err(e) = child_stdin.write_all(initial_json.as_bytes()) {
+        send_error(&mut vsock_writer, &format!("Failed to send initial prompt to Claude: {}", e));
+        anyhow::bail!("Failed to send initial prompt: {}", e);
+    }
+    if let Err(e) = child_stdin.flush() {
+        send_error(&mut vsock_writer, &format!("Failed to flush stdin: {}", e));
+        anyhow::bail!("Failed to flush stdin: {}", e);
+    }
     info!("Sent initial prompt to Claude");
 
     let running = Arc::new(AtomicBool::new(true));
@@ -273,6 +323,11 @@ fn main() -> Result<()> {
 
     // Stop relay threads
     running.store(false, Ordering::Relaxed);
+
+    // If Claude exited with an error, send error message
+    if exit_code != 0 {
+        send_error(&mut vsock_writer, &format!("Claude Code exited with code {}", exit_code));
+    }
 
     // Send exit message
     let exit_msg = VsockMessage::Exit { code: exit_code };

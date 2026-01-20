@@ -151,6 +151,12 @@ impl VsockRelay {
                                     ws_registry_clone.broadcast(task_id, ws_msg).await;
                                     break;
                                 }
+                                VsockMessage::Error { message } => {
+                                    tracing::error!("Sidecar error for task {}: {}", task_id, message);
+                                    // Broadcast error to WebSocket clients
+                                    let ws_msg = WsMessage::Error { message };
+                                    ws_registry_clone.broadcast(task_id, ws_msg).await;
+                                }
                                 VsockMessage::Heartbeat => {
                                     // Heartbeat received, no action needed
                                 }

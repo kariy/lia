@@ -11,7 +11,10 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::error::{ApiError, ApiResult};
-use crate::models::TaskConfig;
+use crate::models::{BootStage, TaskConfig};
+
+/// Callback type for reporting VM creation progress
+pub type ProgressCallback = Box<dyn Fn(BootStage) + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct VmInfo {
@@ -154,6 +157,23 @@ impl VmManager {
         task_config: Option<&TaskConfig>,
         ssh_public_key: Option<&str>,
     ) -> ApiResult<VmInfo> {
+        self.create_vm_with_progress(task_id, task_config, ssh_public_key, None)
+            .await
+    }
+
+    pub async fn create_vm_with_progress(
+        &self,
+        task_id: Uuid,
+        task_config: Option<&TaskConfig>,
+        ssh_public_key: Option<&str>,
+        on_progress: Option<ProgressCallback>,
+    ) -> ApiResult<VmInfo> {
+        let report_progress = |stage: BootStage| {
+            if let Some(ref callback) = on_progress {
+                callback(stage);
+            }
+        };
+
         let vm_id = format!("vm-{}", task_id);
         let cid = self.next_cid.fetch_add(1, Ordering::SeqCst);
 
@@ -221,8 +241,14 @@ impl VmManager {
 
         let pid = child.id();
 
+        // Report: waiting for Firecracker API socket
+        report_progress(BootStage::WaitingForSocket);
+
         // Wait for socket to be ready
         self.wait_for_socket(&socket_path).await?;
+
+        // Report: configuring VM via Firecracker API
+        report_progress(BootStage::ConfiguringVm);
 
         // Configure the VM via Firecracker API
         let vcpu_count = task_config
@@ -247,6 +273,9 @@ impl VmManager {
             mem_size_mib,
         )
         .await?;
+
+        // Report: VM is now booting
+        report_progress(BootStage::BootingVm);
 
         let vm_info = VmInfo {
             vm_id: vm_id.clone(),

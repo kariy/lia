@@ -16,13 +16,16 @@ export function TaskPage() {
 
   const {
     task,
-    status,
+    connectionStatus,
     error,
+    bootStage,
+    bootMessage,
     setTask,
-    setStatus,
+    setConnectionStatus,
     setError,
     processOutput,
     setWebSocket,
+    setBootProgress,
     reset,
   } = useTaskStore();
 
@@ -33,7 +36,7 @@ export function TaskPage() {
     }
 
     reset();
-    setStatus("loading");
+    setConnectionStatus("loading");
 
     getTask(taskId)
       .then((fetchedTask) => {
@@ -44,7 +47,7 @@ export function TaskPage() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-          setStatus("connected");
+          setConnectionStatus("connected");
         };
 
         ws.onmessage = (event) => {
@@ -62,6 +65,17 @@ export function TaskPage() {
                   store.setTask({ ...store.task, status: msg.status });
                 }
                 break;
+              case "progress":
+                // Update boot progress
+                store.setBootProgress(msg.stage, msg.message);
+                // If task is still starting and we got progress, update status
+                if (store.task && store.task.status === "starting") {
+                  // When ready, update task status to running
+                  if (msg.stage === "ready") {
+                    store.setTask({ ...store.task, status: "running" });
+                  }
+                }
+                break;
               case "error":
                 store.setError(msg.message);
                 break;
@@ -73,18 +87,18 @@ export function TaskPage() {
 
         ws.onerror = () => {
           setError("WebSocket connection error");
-          setStatus("error");
+          setConnectionStatus("error");
         };
 
         ws.onclose = () => {
-          setStatus("idle");
+          setConnectionStatus("idle");
         };
 
         setWebSocket(ws);
       })
       .catch((err) => {
         setError(err.message);
-        setStatus("error");
+        setConnectionStatus("error");
       });
 
     return () => {
@@ -93,9 +107,9 @@ export function TaskPage() {
         wsRef.current = null;
       }
     };
-  }, [taskId, navigate, reset, setStatus, setTask, setError, processOutput, setWebSocket]);
+  }, [taskId, navigate, reset, setConnectionStatus, setTask, setError, processOutput, setWebSocket, setBootProgress]);
 
-  if (status === "loading") {
+  if (connectionStatus === "loading") {
     return (
       <div className="flex h-full items-center justify-center bg-background">
         <div className="text-center">
@@ -106,7 +120,7 @@ export function TaskPage() {
     );
   }
 
-  if (status === "error" || !task) {
+  if (connectionStatus === "error" || !task) {
     return (
       <div className="flex h-full items-center justify-center bg-background">
         <div className="text-center">
@@ -114,6 +128,28 @@ export function TaskPage() {
           <Button onClick={() => navigate("/")}>
             Go Home
           </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Show boot progress when task is starting
+  if (task.status === "starting" || task.status === "pending") {
+    return (
+      <div className="flex h-full flex-col bg-background">
+        <TaskHeader task={task} />
+        <div className="flex flex-1 items-center justify-center">
+          <div className="text-center">
+            <Loader2 className="mb-4 h-8 w-8 animate-spin text-foreground mx-auto" />
+            <p className="text-foreground font-medium">
+              {bootMessage || "Starting VM..."}
+            </p>
+            {bootStage && bootStage !== "ready" && (
+              <p className="text-muted-foreground text-sm mt-2">
+                This may take a few moments
+              </p>
+            )}
+          </div>
         </div>
       </div>
     );
