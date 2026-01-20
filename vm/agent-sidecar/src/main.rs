@@ -237,24 +237,33 @@ fn main() -> Result<()> {
     let running_clone = running.clone();
     let mut vsock_writer_stdout = vsock_writer.try_clone()?;
     let stdout_thread = std::thread::spawn(move || {
+        info!("stdout_thread started");
         let reader = BufReader::new(child_stdout);
+        let mut line_count = 0;
         for line in reader.lines() {
             if !running_clone.load(Ordering::Relaxed) {
+                info!("stdout_thread: running flag is false, breaking");
                 break;
             }
             match line {
                 Ok(data) => {
+                    line_count += 1;
                     // Each line is a complete JSON object from Claude Code
                     let msg = VsockMessage::Output { data };
                     let json = serde_json::to_string(&msg).unwrap() + "\n";
                     if vsock_writer_stdout.write_all(json.as_bytes()).is_err() {
+                        info!("stdout_thread: write failed, breaking");
                         break;
                     }
                     let _ = vsock_writer_stdout.flush();
                 }
-                Err(_) => break,
+                Err(e) => {
+                    info!("stdout_thread: read error: {}, breaking", e);
+                    break;
+                }
             }
         }
+        info!("stdout_thread finished after {} lines", line_count);
     });
 
     // Thread: stderr -> vsock
@@ -333,6 +342,10 @@ fn main() -> Result<()> {
     let exit_msg = VsockMessage::Exit { code: exit_code };
     let json = serde_json::to_string(&exit_msg)? + "\n";
     let _ = vsock_writer.write_all(json.as_bytes());
+    let _ = vsock_writer.flush();
+
+    // Give the client time to read buffered data before closing the connection
+    std::thread::sleep(std::time::Duration::from_millis(500));
 
     // Wait for threads to finish
     let _ = stdout_thread.join();

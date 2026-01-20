@@ -40,7 +40,9 @@ impl VsockRelay {
 
         // Wait for vsock to be ready and establish connection
         // Firecracker vsock protocol: connect to UDS, send "CONNECT <port>\n", read "OK <local_port>\n"
+        // Debian takes ~30 seconds to boot, so we retry for up to 60 seconds
         const VSOCK_PORT: u32 = 5000;
+        const MAX_ATTEMPTS: u32 = 600; // 600 * 100ms = 60 seconds
         let mut attempts = 0;
         let stream = loop {
             match UnixStream::connect(&vsock_path).await {
@@ -50,9 +52,10 @@ impl VsockRelay {
                     if let Err(e) = stream.write_all(connect_cmd.as_bytes()).await {
                         tracing::warn!("Failed to send CONNECT command: {}", e);
                         attempts += 1;
-                        if attempts > 100 {
+                        if attempts > MAX_ATTEMPTS {
                             return Err(crate::error::ApiError::VmError(format!(
-                                "Failed to establish vsock connection after 100 attempts"
+                                "Failed to establish vsock connection after {} attempts ({}s)",
+                                MAX_ATTEMPTS, MAX_ATTEMPTS / 10
                             )));
                         }
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -70,7 +73,7 @@ impl VsockRelay {
                             } else {
                                 tracing::warn!("Unexpected vsock response: {}", response_str.trim());
                                 attempts += 1;
-                                if attempts > 100 {
+                                if attempts > MAX_ATTEMPTS {
                                     return Err(crate::error::ApiError::VmError(format!(
                                         "Failed to establish vsock connection: unexpected response"
                                     )));
@@ -87,19 +90,20 @@ impl VsockRelay {
                         }
                     }
                     attempts += 1;
-                    if attempts > 100 {
+                    if attempts > MAX_ATTEMPTS {
                         return Err(crate::error::ApiError::VmError(format!(
-                            "Failed to establish vsock connection after 100 attempts"
+                            "Failed to establish vsock connection after {}s",
+                            MAX_ATTEMPTS / 10
                         )));
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
                 Err(e) => {
                     attempts += 1;
-                    if attempts > 100 {
+                    if attempts > MAX_ATTEMPTS {
                         return Err(crate::error::ApiError::VmError(format!(
-                            "Failed to connect to vsock after 100 attempts: {}",
-                            e
+                            "Failed to connect to vsock after {}s: {}",
+                            MAX_ATTEMPTS / 10, e
                         )));
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -119,6 +123,9 @@ impl VsockRelay {
         let init_json = serde_json::to_string(&init_msg).unwrap() + "\n";
         writer.write_all(init_json.as_bytes()).await.map_err(|e| {
             crate::error::ApiError::VmError(format!("Failed to send init message: {}", e))
+        })?;
+        writer.flush().await.map_err(|e| {
+            crate::error::ApiError::VmError(format!("Failed to flush init message: {}", e))
         })?;
 
         // Spawn reader task
@@ -178,6 +185,9 @@ impl VsockRelay {
                 let input_msg = VsockMessage::Input { data: input };
                 let json = serde_json::to_string(&input_msg).unwrap() + "\n";
                 if writer.write_all(json.as_bytes()).await.is_err() {
+                    break;
+                }
+                if writer.flush().await.is_err() {
                     break;
                 }
             }
