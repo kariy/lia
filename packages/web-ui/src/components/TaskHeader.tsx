@@ -5,6 +5,7 @@ import { useTaskStore } from "../store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Copy } from "lucide-react";
+import { toast } from "sonner";
 
 interface TaskHeaderProps {
   task: TaskResponse;
@@ -43,7 +44,32 @@ export function TaskHeader({ task }: TaskHeaderProps) {
   };
 
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text).catch(console.error);
+    // Try modern clipboard API first (requires HTTPS or localhost)
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => {
+          toast.success("SSH command copied to clipboard");
+        })
+        .catch(() => {
+          toast.error("Failed to copy to clipboard");
+        });
+      return;
+    }
+
+    // Fallback for non-secure contexts (HTTP)
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      toast.success("SSH command copied to clipboard");
+    } catch {
+      toast.error("Failed to copy to clipboard");
+    }
   };
 
   return (
