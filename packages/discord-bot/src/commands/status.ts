@@ -24,6 +24,10 @@ export const status = {
     try {
       const task = await apiClient.getTask(taskId);
 
+      const repoDisplay = task.repositories.length > 0
+        ? task.repositories.map(r => `\`${r}\``).join(", ")
+        : "No repository";
+
       const embed = new EmbedBuilder()
         .setColor(getStatusColor(task.status))
         .setTitle("Task Status")
@@ -35,7 +39,7 @@ export const status = {
             value: `<t:${Math.floor(new Date(task.created_at).getTime() / 1000)}:R>`,
             inline: true,
           },
-          { name: "Prompt", value: truncate(task.prompt, 1024) }
+          { name: "Repository", value: repoDisplay }
         )
         .setTimestamp();
 

@@ -26,6 +26,7 @@ function getWebUserId(): string {
 
 export async function createTask(
   prompt: string,
+  repositories: string[],
   options?: {
     config?: CreateTaskRequest["config"];
     files?: CreateTaskRequest["files"];
@@ -34,6 +35,8 @@ export async function createTask(
 ): Promise<TaskResponse> {
   const request: CreateTaskRequest = {
     prompt,
+    repositories,
+    source: "web",
     user_id: getWebUserId(),
     ...options,
   };

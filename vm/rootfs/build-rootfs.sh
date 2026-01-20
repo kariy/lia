@@ -1,15 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build a minimal Alpine Linux rootfs for running Claude Code in Firecracker
+# Build a minimal Debian Linux rootfs for running Claude Code in Firecracker
+# Uses Debian instead of Alpine because Claude Code requires glibc
 
 ROOTFS_SIZE="2G"
 ROOTFS_FILE="rootfs.ext4"
 MOUNT_DIR="/tmp/lia-rootfs"
-ALPINE_VERSION="3.19"
-ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
+DEBIAN_VERSION="bookworm"
+DEBIAN_MIRROR="http://deb.debian.org/debian"
 
-echo "Building Lia rootfs..."
+echo "Building Lia rootfs (Debian ${DEBIAN_VERSION})..."
 
 # Create sparse file
 echo "Creating ${ROOTFS_SIZE} sparse file..."
@@ -22,6 +23,10 @@ mount -o loop ${ROOTFS_FILE} ${MOUNT_DIR}
 
 # Cleanup on exit
 cleanup() {
+    # Kill any processes using the mount
+    fuser -k ${MOUNT_DIR} 2>/dev/null || true
+    sleep 1
+    umount ${MOUNT_DIR}/dev/pts 2>/dev/null || true
     umount ${MOUNT_DIR}/dev 2>/dev/null || true
     umount ${MOUNT_DIR}/sys 2>/dev/null || true
     umount ${MOUNT_DIR}/proc 2>/dev/null || true
@@ -30,64 +35,89 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Install Alpine base
-echo "Installing Alpine Linux ${ALPINE_VERSION}..."
-apk --arch x86_64 -X ${ALPINE_MIRROR}/v${ALPINE_VERSION}/main \
-    -U --allow-untrusted --root ${MOUNT_DIR} --initdb \
-    add alpine-base openrc busybox busybox-binsh
+# Install Debian base using debootstrap
+echo "Installing Debian ${DEBIAN_VERSION} base system..."
+debootstrap --arch=amd64 --variant=minbase ${DEBIAN_VERSION} ${MOUNT_DIR} ${DEBIAN_MIRROR}
 
-# Create mount points for virtual filesystems
-mkdir -p ${MOUNT_DIR}/{proc,sys,dev}
-
-# Configure Alpine
-cat > ${MOUNT_DIR}/etc/inittab << 'EOF'
-::sysinit:/sbin/openrc sysinit
-::sysinit:/sbin/openrc boot
-::wait:/sbin/openrc default
-
-# Set up a console on ttyS0
-ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt100
-
-::ctrlaltdel:/sbin/reboot
-::shutdown:/sbin/openrc shutdown
+# Configure apt sources
+cat > ${MOUNT_DIR}/etc/apt/sources.list << EOF
+deb ${DEBIAN_MIRROR} ${DEBIAN_VERSION} main contrib
+deb ${DEBIAN_MIRROR} ${DEBIAN_VERSION}-updates main contrib
+deb http://security.debian.org/debian-security ${DEBIAN_VERSION}-security main contrib
 EOF
 
-# Configure networking - will be configured by init script based on metadata
-cat > ${MOUNT_DIR}/etc/network/interfaces << 'EOF'
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet static
-    address 172.16.0.2
-    netmask 255.255.255.0
-    gateway 172.16.0.1
-EOF
-
-# Enable services
-mkdir -p ${MOUNT_DIR}/etc/runlevels/default
-mkdir -p ${MOUNT_DIR}/etc/runlevels/boot
-ln -sf /etc/init.d/networking ${MOUNT_DIR}/etc/runlevels/default/networking
-
-# Configure DNS early (needed for chroot network access)
+# Configure DNS
 cat > ${MOUNT_DIR}/etc/resolv.conf << 'EOF'
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 EOF
 
-# Install required packages including SSH server
+# Mount virtual filesystems for chroot
+mount --bind /proc ${MOUNT_DIR}/proc
+mount --bind /sys ${MOUNT_DIR}/sys
+mount --bind /dev ${MOUNT_DIR}/dev
+mount --bind /dev/pts ${MOUNT_DIR}/dev/pts
+
+# Install required packages
 echo "Installing packages..."
-apk --arch x86_64 -X ${ALPINE_MIRROR}/v${ALPINE_VERSION}/main \
-    -X ${ALPINE_MIRROR}/v${ALPINE_VERSION}/community \
-    --allow-untrusted --root ${MOUNT_DIR} add \
-    nodejs npm git curl wget bash \
-    openssh-server openssh-client \
-    python3 py3-pip build-base linux-headers \
-    ca-certificates tzdata sudo
+chroot ${MOUNT_DIR} /bin/bash -c "
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends \
+        systemd systemd-sysv \
+        init \
+        openssh-server \
+        nodejs npm \
+        git curl wget ca-certificates \
+        python3 python3-pip \
+        build-essential \
+        iproute2 iputils-ping net-tools \
+        procps sudo locales \
+        haveged
+
+    # Enable haveged for entropy (important for crypto operations in VM)
+    systemctl enable haveged
+
+    # Clean up apt cache
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+"
+
+# Configure locale
+chroot ${MOUNT_DIR} /bin/bash -c "
+    echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen
+    locale-gen
+"
+
+# Configure systemd for Firecracker (no unnecessary services)
+echo "Configuring systemd..."
+
+# Disable unnecessary services
+chroot ${MOUNT_DIR} /bin/bash -c "
+    systemctl mask systemd-resolved.service
+    systemctl mask systemd-networkd-wait-online.service
+    systemctl mask systemd-timesyncd.service
+    systemctl mask apt-daily.timer
+    systemctl mask apt-daily-upgrade.timer
+    systemctl mask e2scrub_all.timer
+    systemctl mask fstrim.timer
+"
+
+# Configure serial console
+mkdir -p ${MOUNT_DIR}/etc/systemd/system/serial-getty@ttyS0.service.d
+cat > ${MOUNT_DIR}/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf << 'EOF'
+[Service]
+ExecStart=
+ExecStart=-/sbin/agetty --autologin root -o '-p -- \\u' --keep-baud 115200,38400,9600 %I $TERM
+EOF
+
+# Enable serial console
+chroot ${MOUNT_DIR} /bin/bash -c "
+    systemctl enable serial-getty@ttyS0.service
+"
 
 # Configure SSH server
 echo "Configuring SSH server..."
-mkdir -p ${MOUNT_DIR}/etc/ssh
 cat > ${MOUNT_DIR}/etc/ssh/sshd_config << 'EOF'
 Port 22
 AddressFamily any
@@ -114,15 +144,11 @@ ClientAliveInterval 60
 ClientAliveCountMax 3
 
 # Subsystems
-Subsystem sftp /usr/lib/ssh/sftp-server
+Subsystem sftp /usr/lib/openssh/sftp-server
 EOF
 
-# Generate SSH host keys
-echo "Generating SSH host keys..."
-chroot ${MOUNT_DIR} /bin/sh -c "ssh-keygen -A"
-
-# Enable SSH service
-ln -sf /etc/init.d/sshd ${MOUNT_DIR}/etc/runlevels/default/sshd
+# Enable SSH
+chroot ${MOUNT_DIR} /bin/bash -c "systemctl enable ssh"
 
 # Create .ssh directory for root
 mkdir -p ${MOUNT_DIR}/root/.ssh
@@ -130,113 +156,165 @@ chmod 700 ${MOUNT_DIR}/root/.ssh
 touch ${MOUNT_DIR}/root/.ssh/authorized_keys
 chmod 600 ${MOUNT_DIR}/root/.ssh/authorized_keys
 
+# Create claude user for running Claude Code (cannot use --dangerously-skip-permissions as root)
+echo "Creating claude user..."
+chroot ${MOUNT_DIR} /bin/bash -c "
+    useradd -m -s /bin/bash claude
+    mkdir -p /home/claude/.local/bin
+    chown -R claude:claude /home/claude
+"
+
 # Install Claude Code
 echo "Installing Claude Code..."
-# Bind mount virtual filesystems needed by the installer
-mount --bind /proc ${MOUNT_DIR}/proc
-mount --bind /sys ${MOUNT_DIR}/sys
-mount --bind /dev ${MOUNT_DIR}/dev
+chroot ${MOUNT_DIR} /bin/bash -c "
+    export HOME=/root
+    curl -fsSL https://claude.ai/install.sh | bash
+"
 
-chroot ${MOUNT_DIR} /bin/sh -c "curl -fsSL https://claude.ai/install.sh | bash"
+# Verify Claude installation and copy to shared location
+if chroot ${MOUNT_DIR} /bin/bash -c "test -f /root/.local/bin/claude"; then
+    echo "Claude Code installed successfully"
 
-# Unmount virtual filesystems
-umount ${MOUNT_DIR}/dev
-umount ${MOUNT_DIR}/sys
-umount ${MOUNT_DIR}/proc
+    # Get the actual binary path (claude is a symlink)
+    CLAUDE_TARGET=$(chroot ${MOUNT_DIR} readlink -f /root/.local/bin/claude)
+    echo "Claude binary at: ${CLAUDE_TARGET}"
 
-# Copy agent sidecar binary (must be built first)
-if [ -f "../agent-sidecar/target/release/agent-sidecar" ]; then
-    cp ../agent-sidecar/target/release/agent-sidecar ${MOUNT_DIR}/usr/local/bin/
+    # Copy Claude to a shared location accessible by all users
+    mkdir -p ${MOUNT_DIR}/usr/local/share/claude/versions
+    cp ${MOUNT_DIR}${CLAUDE_TARGET} ${MOUNT_DIR}/usr/local/share/claude/versions/
+    chmod 755 ${MOUNT_DIR}/usr/local/share/claude/versions/*
+
+    # Create symlinks for both root and claude user
+    CLAUDE_VERSION=$(basename ${CLAUDE_TARGET})
+    ln -sf /usr/local/share/claude/versions/${CLAUDE_VERSION} ${MOUNT_DIR}/root/.local/bin/claude 2>/dev/null || true
+    ln -sf /usr/local/share/claude/versions/${CLAUDE_VERSION} ${MOUNT_DIR}/home/claude/.local/bin/claude
+    chown -R claude:claude ${MOUNT_DIR}/home/claude/.local/bin
+
+    # Add to PATH system-wide
+    echo 'export PATH="/home/claude/.local/bin:/usr/local/bin:$PATH"' >> ${MOUNT_DIR}/etc/profile.d/claude.sh
+else
+    echo "Warning: Claude Code installation may have failed"
+fi
+
+# Configure sudo to allow root to run commands as claude without password
+cat > ${MOUNT_DIR}/etc/sudoers.d/agent-sidecar << 'EOF'
+# Allow root to run commands as claude without password
+root ALL=(claude) NOPASSWD: ALL
+EOF
+chmod 440 ${MOUNT_DIR}/etc/sudoers.d/agent-sidecar
+
+# Copy agent sidecar binary
+# Prefer musl build for portability (works regardless of glibc version)
+SIDECAR_MUSL_PATH="../agent-sidecar/target/x86_64-unknown-linux-musl/release/agent-sidecar"
+SIDECAR_PATH="../agent-sidecar/target/release/agent-sidecar"
+
+if [ -f "${SIDECAR_MUSL_PATH}" ]; then
+    echo "Copying agent-sidecar (musl build - recommended for portability)..."
+    cp ${SIDECAR_MUSL_PATH} ${MOUNT_DIR}/usr/local/bin/
+    chmod +x ${MOUNT_DIR}/usr/local/bin/agent-sidecar
+elif [ -f "${SIDECAR_PATH}" ]; then
+    echo "Copying agent-sidecar (glibc build - may have version compatibility issues)..."
+    cp ${SIDECAR_PATH} ${MOUNT_DIR}/usr/local/bin/
     chmod +x ${MOUNT_DIR}/usr/local/bin/agent-sidecar
 else
     echo "Warning: agent-sidecar binary not found, skipping..."
+    echo "  Build with: cd ../agent-sidecar && cargo build --release --target x86_64-unknown-linux-musl"
 fi
 
-# Create workspace directory
+# Create workspace directory (owned by claude user for file operations)
 mkdir -p ${MOUNT_DIR}/workspace
+chroot ${MOUNT_DIR} /bin/bash -c "chown claude:claude /workspace"
 chmod 755 ${MOUNT_DIR}/workspace
 
-# Create init script to configure networking and SSH keys from metadata
-cat > ${MOUNT_DIR}/etc/init.d/lia-init << 'EOF'
-#!/sbin/openrc-run
+# Create network configuration script (run at boot)
+cat > ${MOUNT_DIR}/usr/local/bin/lia-network-init << 'EOF'
+#!/bin/bash
+# Configure networking from kernel command line parameters
+# Format: lia.ip=172.16.0.X lia.gateway=172.16.0.1 lia.ssh_key="ssh-rsa ..."
 
-name="lia-init"
-description="Initialize Lia VM networking and SSH"
+CMDLINE=$(cat /proc/cmdline)
 
-depend() {
-    before networking sshd
-}
+# Extract parameters
+IP=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^lia.ip=' | cut -d= -f2)
+GATEWAY=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^lia.gateway=' | cut -d= -f2)
+SSH_KEY=$(echo "$CMDLINE" | tr ' ' '\n' | grep '^lia.ssh_key=' | cut -d= -f2- | sed 's/+/ /g')
 
-start() {
-    ebegin "Configuring Lia VM"
+if [ -n "$IP" ]; then
+    echo "Configuring IP: $IP"
+    ip addr add ${IP}/24 dev eth0 2>/dev/null || true
+    ip link set eth0 up
+    ip route add default via ${GATEWAY:-172.16.0.1} 2>/dev/null || true
+fi
 
-    # Read metadata from kernel command line or vsock
-    # The IP address and SSH key will be passed via kernel boot args
-    # Format: lia.ip=172.16.0.X lia.gateway=172.16.0.1 lia.ssh_key="ssh-rsa ..."
-
-    local ip=$(cat /proc/cmdline | tr ' ' '\n' | grep '^lia.ip=' | cut -d= -f2)
-    local gateway=$(cat /proc/cmdline | tr ' ' '\n' | grep '^lia.gateway=' | cut -d= -f2)
-    local ssh_key=$(cat /proc/cmdline | tr ' ' '\n' | grep '^lia.ssh_key=' | cut -d= -f2- | sed 's/+/ /g')
-
-    if [ -n "$ip" ]; then
-        cat > /etc/network/interfaces << NETEOF
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet static
-    address ${ip}
-    netmask 255.255.255.0
-    gateway ${gateway:-172.16.0.1}
-NETEOF
-        echo "Configured IP: ${ip}"
-    fi
-
-    if [ -n "$ssh_key" ]; then
-        echo "$ssh_key" > /root/.ssh/authorized_keys
-        chmod 600 /root/.ssh/authorized_keys
-        echo "Configured SSH key"
-    fi
-
-    eend 0
-}
+if [ -n "$SSH_KEY" ]; then
+    echo "Configuring SSH key"
+    mkdir -p /root/.ssh
+    echo "$SSH_KEY" > /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+fi
 EOF
-chmod +x ${MOUNT_DIR}/etc/init.d/lia-init
-ln -sf /etc/init.d/lia-init ${MOUNT_DIR}/etc/runlevels/boot/lia-init
+chmod +x ${MOUNT_DIR}/usr/local/bin/lia-network-init
 
-# Create init script to start agent sidecar
-cat > ${MOUNT_DIR}/etc/init.d/agent-sidecar << 'EOF'
-#!/sbin/openrc-run
+# Create systemd service for network init
+cat > ${MOUNT_DIR}/etc/systemd/system/lia-network-init.service << 'EOF'
+[Unit]
+Description=Lia Network Initialization
+Before=network.target ssh.service
+After=systemd-udevd.service
 
-name="agent-sidecar"
-command="/usr/local/bin/agent-sidecar"
-command_background="yes"
-pidfile="/var/run/agent-sidecar.pid"
-output_log="/var/log/agent-sidecar.log"
-error_log="/var/log/agent-sidecar.log"
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/lia-network-init
+RemainAfterExit=yes
 
-depend() {
-    need net
-}
+[Install]
+WantedBy=multi-user.target
 EOF
-chmod +x ${MOUNT_DIR}/etc/init.d/agent-sidecar
-ln -sf /etc/init.d/agent-sidecar ${MOUNT_DIR}/etc/runlevels/default/agent-sidecar
+chroot ${MOUNT_DIR} /bin/bash -c "systemctl enable lia-network-init.service"
+
+# Create systemd service for agent-sidecar
+cat > ${MOUNT_DIR}/etc/systemd/system/agent-sidecar.service << 'EOF'
+[Unit]
+Description=Lia Agent Sidecar
+After=network.target lia-network-init.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agent-sidecar
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment="PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=/workspace
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chroot ${MOUNT_DIR} /bin/bash -c "systemctl enable agent-sidecar.service"
 
 # Set hostname
 echo "lia-agent" > ${MOUNT_DIR}/etc/hostname
 
-# Set root password (empty for passwordless login on console)
-chroot ${MOUNT_DIR} /bin/sh -c "passwd -d root"
+# Configure hosts file
+cat > ${MOUNT_DIR}/etc/hosts << 'EOF'
+127.0.0.1   localhost
+127.0.1.1   lia-agent
+EOF
 
-# Create a simple profile
+# Set root password (empty for passwordless console login)
+chroot ${MOUNT_DIR} /bin/bash -c "passwd -d root"
+
+# Create profile for environment
 cat > ${MOUNT_DIR}/etc/profile.d/lia.sh << 'EOF'
-export PATH="/usr/local/bin:$PATH"
+export PATH="/home/claude/.local/bin:/usr/local/bin:$PATH"
 export TERM=xterm-256color
 cd /workspace 2>/dev/null || true
 EOF
 
-# Configure git
-cat > ${MOUNT_DIR}/root/.gitconfig << 'EOF'
+# Configure git for both root and claude users
+for GITCONFIG in ${MOUNT_DIR}/root/.gitconfig ${MOUNT_DIR}/home/claude/.gitconfig; do
+    cat > ${GITCONFIG} << 'EOF'
 [user]
     name = Lia Agent
     email = agent@lia.local
@@ -245,6 +323,18 @@ cat > ${MOUNT_DIR}/root/.gitconfig << 'EOF'
 [safe]
     directory = /workspace
 EOF
+done
+chroot ${MOUNT_DIR} /bin/bash -c "chown claude:claude /home/claude/.gitconfig"
 
+# Unmount virtual filesystems
+umount ${MOUNT_DIR}/dev/pts
+umount ${MOUNT_DIR}/dev
+umount ${MOUNT_DIR}/sys
+umount ${MOUNT_DIR}/proc
+
+echo ""
 echo "Rootfs build complete: ${ROOTFS_FILE}"
 echo "Size: $(du -h ${ROOTFS_FILE} | cut -f1)"
+echo ""
+echo "To install to /var/lib/lia/rootfs/:"
+echo "  sudo cp ${ROOTFS_FILE} /var/lib/lia/rootfs/"

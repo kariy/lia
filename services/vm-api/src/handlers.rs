@@ -14,7 +14,8 @@ use uuid::Uuid;
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::models::{
-    CreateTaskRequest, ListTasksQuery, TaskListResponse, TaskResponse, TaskStatus, WsMessage,
+    is_valid_repo_format, CreateTaskRequest, ListTasksQuery, TaskListResponse, TaskResponse,
+    TaskStatus, WsMessage,
 };
 use crate::vsock::VsockRelay;
 use crate::AppState;
@@ -32,10 +33,31 @@ pub async fn create_task(
         return Err(ApiError::BadRequest("Prompt cannot be empty".to_string()));
     }
 
+    // Validate repositories
+    if req.repositories.is_empty() {
+        return Err(ApiError::BadRequest(
+            "At least one repository is required".to_string(),
+        ));
+    }
+
+    for repo in &req.repositories {
+        if !is_valid_repo_format(repo) {
+            return Err(ApiError::BadRequest(format!(
+                "Invalid repository format: '{}'. Expected 'owner/repo'",
+                repo
+            )));
+        }
+    }
+
+    // Use a default user_id if not provided
+    let user_id = req.user_id.clone().unwrap_or_else(|| "anonymous".to_string());
+
     // Create task in database
     let task = db::create_task(
         &state.db,
-        &req.user_id,
+        &user_id,
+        req.source,
+        &req.repositories,
         req.config.clone(),
     )
     .await?;

@@ -9,21 +9,31 @@ interface NewAgentPageProps {
   onCancel: () => void;
 }
 
+const REPO_REGEX = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+
 export function NewAgentPage({ onTaskCreated, onCancel }: NewAgentPageProps) {
   const navigate = useNavigate();
+  const [repository, setRepository] = useState("");
   const [prompt, setPrompt] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isValidRepo = repository.trim() === "" || REPO_REGEX.test(repository.trim());
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!prompt.trim() || isSubmitting) return;
+    if (!prompt.trim() || !repository.trim() || isSubmitting) return;
+
+    if (!REPO_REGEX.test(repository.trim())) {
+      setError("Invalid repository format. Use 'owner/repo' format.");
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
 
     try {
-      const task = await createTask(prompt.trim());
+      const task = await createTask(prompt.trim(), [repository.trim()]);
       onTaskCreated();
       navigate(`/tasks/${task.id}`);
     } catch (err) {
@@ -45,21 +55,54 @@ export function NewAgentPage({ onTaskCreated, onCancel }: NewAgentPageProps) {
           <h2 className="text-lg font-semibold text-foreground mb-4">
             New Agent
           </h2>
-          <Textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="What would you like the agent to do?"
-            className="min-h-[160px] text-base mb-4"
-            disabled={isSubmitting}
-            autoFocus
-          />
+          <div className="mb-4">
+            <label
+              htmlFor="repository"
+              className="block text-sm font-medium text-foreground mb-2"
+            >
+              GitHub Repository
+            </label>
+            <input
+              id="repository"
+              type="text"
+              value={repository}
+              onChange={(e) => setRepository(e.target.value)}
+              placeholder="owner/repo (e.g., facebook/react)"
+              className={`flex h-10 w-full rounded-md border bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+                !isValidRepo ? "border-destructive" : "border-input"
+              }`}
+              disabled={isSubmitting}
+              autoFocus
+            />
+            {!isValidRepo && (
+              <p className="text-sm text-destructive mt-1">
+                Invalid format. Use 'owner/repo' format.
+              </p>
+            )}
+          </div>
+          <div className="mb-4">
+            <label
+              htmlFor="prompt"
+              className="block text-sm font-medium text-foreground mb-2"
+            >
+              Prompt
+            </label>
+            <Textarea
+              id="prompt"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="What would you like the agent to do?"
+              className="min-h-[160px] text-base"
+              disabled={isSubmitting}
+            />
+          </div>
           {error && (
             <p className="text-sm text-destructive mb-4">{error}</p>
           )}
           <div className="flex gap-3">
             <Button
               type="submit"
-              disabled={!prompt.trim() || isSubmitting}
+              disabled={!prompt.trim() || !repository.trim() || !isValidRepo || isSubmitting}
             >
               {isSubmitting ? "Creating..." : "Create Agent"}
             </Button>

@@ -11,6 +11,22 @@ export const TaskStatus = {
 
 export type TaskStatus = (typeof TaskStatus)[keyof typeof TaskStatus];
 
+// Task source enum
+export const TaskSource = {
+  Discord: "discord",
+  Web: "web",
+} as const;
+
+export type TaskSource = (typeof TaskSource)[keyof typeof TaskSource];
+
+// GitHub repository format validation
+export const GitHubRepoSchema = z
+  .string()
+  .regex(
+    /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/,
+    "Repository must be in 'owner/repo' format"
+  );
+
 // Task configuration schema
 export const TaskConfigSchema = z.object({
   timeout_minutes: z.number().optional().default(30),
@@ -24,7 +40,9 @@ export type TaskConfig = z.infer<typeof TaskConfigSchema>;
 // Task creation request
 export const CreateTaskRequestSchema = z.object({
   prompt: z.string().min(1).max(100000),
-  user_id: z.string().min(1),
+  repositories: z.array(GitHubRepoSchema).min(1),
+  source: z.enum(["discord", "web"]),
+  user_id: z.string().min(1).optional(),
   guild_id: z.string().optional(),
   config: TaskConfigSchema.optional(),
   files: z
@@ -45,8 +63,9 @@ export const TaskResponseSchema = z.object({
   id: z.string().uuid(),
   user_id: z.string(),
   guild_id: z.string().nullable(),
-  prompt: z.string(),
   status: z.enum(["pending", "starting", "running", "suspended", "terminated"]),
+  source: z.enum(["discord", "web"]),
+  repositories: z.array(z.string()),
   vm_id: z.string().nullable(),
   config: TaskConfigSchema.nullable(),
   created_at: z.string().datetime(),

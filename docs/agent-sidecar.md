@@ -7,16 +7,17 @@ The agent-sidecar is a minimal Rust binary that runs inside each Firecracker mic
 ```
 vm/agent-sidecar/
 ├── src/
-│   └── main.rs      # Complete implementation (~329 lines)
+│   └── main.rs      # Complete implementation
 └── Cargo.toml       # Dependencies and build config
 ```
 
 ## Design Goals
 
-- **Minimal footprint**: Optimized for size in Alpine rootfs
+- **Minimal footprint**: Optimized for size, statically linked with musl
 - **Zero-copy I/O**: 4KB buffers for efficient streaming
 - **Simple concurrency**: OS threads for deterministic behavior
 - **Fast fail**: No retries (VMs are ephemeral)
+- **Portability**: musl-linked binary works on any Linux
 
 ## Dependencies
 
@@ -100,8 +101,14 @@ for each file:
 
 ### 3. Claude Code Spawn
 
+The sidecar runs Claude Code as a non-root user (`claude`) because `--dangerously-skip-permissions` cannot be used with root privileges for security reasons.
+
 ```rust
-Command::new("claude")
+Command::new("sudo")
+    .arg("-u").arg("claude")
+    .arg("-E")  // Preserve environment (for ANTHROPIC_API_KEY)
+    .arg("--")
+    .arg("/home/claude/.local/bin/claude")
     .arg("--print")
     .arg("--input-format").arg("stream-json")
     .arg("--output-format").arg("stream-json")
@@ -109,6 +116,7 @@ Command::new("claude")
     .arg("--include-partial-messages")
     .arg("--dangerously-skip-permissions")
     .env("ANTHROPIC_API_KEY", &api_key)
+    .env("HOME", "/home/claude")
     .current_dir("/workspace")
     .stdin(Stdio::piped())
     .stdout(Stdio::piped())
@@ -128,11 +136,12 @@ Key flags:
 | `--dangerously-skip-permissions` | Auto-approve tool calls (sandboxed VM) |
 
 Key points:
-- Working directory: `/workspace`
+- Working directory: `/workspace` (owned by claude user)
 - API key via environment (never touches disk)
 - All streams piped for relay
 - **Persistent process**: Claude Code stays running, accepting multiple prompts via stdin
 - Initial prompt sent via stdin as JSON (not as CLI argument)
+- **Non-root execution**: Claude runs as `claude` user via sudo
 
 See [claude-cli.md](./claude-cli.md) for complete documentation on programmatic usage.
 
@@ -232,21 +241,33 @@ Web UI ← WebSocket ← VM API ← vsock ← Sidecar ← stdout/stderr
 ## File Locations
 
 In the VM:
-- **Binary**: `/usr/local/bin/agent-sidecar`
-- **Working directory**: `/workspace`
-- **Log**: `/var/log/agent-sidecar.log`
-- **PID file**: `/var/run/agent-sidecar.pid`
+- **Sidecar binary**: `/usr/local/bin/agent-sidecar`
+- **Claude binary**: `/usr/local/share/claude/versions/<version>`
+- **Claude symlink**: `/home/claude/.local/bin/claude`
+- **Working directory**: `/workspace` (owned by claude user)
 
 ## Service Configuration
 
-The sidecar runs as an OpenRC service:
+The sidecar runs as a systemd service on Debian:
 
-```
-/etc/init.d/agent-sidecar
-├── Depends on: network
-├── Runs as: background daemon
-├── Logs to: /var/log/agent-sidecar.log
-└── PID file: /var/run/agent-sidecar.pid
+```ini
+# /etc/systemd/system/agent-sidecar.service
+[Unit]
+Description=Lia Agent Sidecar
+After=network.target lia-network-init.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agent-sidecar
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment="PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=/workspace
+
+[Install]
+WantedBy=multi-user.target
 ```
 
 ## Development
@@ -259,9 +280,9 @@ cargo build
 cargo build --release
 ```
 
-## Building for Alpine Linux (VM rootfs)
+## Building for VM (Recommended: musl static linking)
 
-The VM rootfs uses Alpine Linux which uses **musl libc**, not glibc. You must cross-compile for the musl target:
+Always use musl static linking for the sidecar binary. This ensures portability across different Linux distributions and glibc versions.
 
 ```bash
 # Install musl target (one-time)
@@ -270,14 +291,19 @@ rustup target add x86_64-unknown-linux-musl
 # Install musl tools (Debian/Ubuntu)
 sudo apt-get install musl-tools
 
-# Build for Alpine
+# Build statically-linked binary
 cargo build --release --target x86_64-unknown-linux-musl
 
 # Output: target/x86_64-unknown-linux-musl/release/agent-sidecar
-# Copy to rootfs: /usr/local/bin/agent-sidecar
 ```
 
-> **Important**: A glibc-linked binary will fail to run on Alpine with "not found" errors (missing dynamic linker). Always use the musl target for the VM rootfs.
+**Why musl?** The host system may have a newer glibc than the VM rootfs. For example, Ubuntu 24.04 has glibc 2.39 while Debian Bookworm has glibc 2.36. A glibc-linked binary built on the host will fail with:
+
+```
+/usr/local/bin/agent-sidecar: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.39' not found
+```
+
+musl produces a fully static binary that works everywhere.
 
 ### Updating the rootfs
 
@@ -293,6 +319,17 @@ sudo umount /mnt/rootfs
 ```
 
 New VMs will use the updated binary (each VM copies the rootfs template on creation).
+
+## VM Rootfs Requirements
+
+The Debian rootfs must include:
+
+1. **claude user**: Non-root user for running Claude Code
+2. **haveged**: Entropy daemon (VMs lack hardware entropy sources)
+3. **sudo**: For sidecar to run Claude as claude user
+4. **Claude Code**: Installed in shared location `/usr/local/share/claude/`
+
+The build script (`vm/rootfs/build-rootfs.sh`) handles all of this automatically.
 
 ## Troubleshooting
 
@@ -310,26 +347,114 @@ Ok(fd.as_raw_fd())
 Ok(fd.into_raw_fd())
 ```
 
-### Binary not running on Alpine
+### "GLIBC_X.XX not found"
 
-If the sidecar fails to start with no output or "not found" errors, check the binary type:
+The sidecar binary was built with glibc but the rootfs has an older glibc version.
+
+**Fix**: Rebuild with musl target:
 
 ```bash
-file agent-sidecar
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-- **Wrong**: `dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2` (glibc)
-- **Correct**: `static-pie linked` (musl)
+### "--dangerously-skip-permissions cannot be used with root"
 
-Rebuild with `--target x86_64-unknown-linux-musl`.
+Claude Code refuses to run with `--dangerously-skip-permissions` when executed as root.
+
+**Fix**: The sidecar runs Claude as the `claude` user via sudo. Ensure:
+1. The `claude` user exists in the rootfs
+2. Sudo is configured in `/etc/sudoers.d/agent-sidecar`:
+   ```
+   root ALL=(claude) NOPASSWD: ALL
+   ```
+3. Claude binary is accessible at `/home/claude/.local/bin/claude`
+
+### "getrandom indicates that the entropy pool has not been initialized"
+
+VMs often lack sufficient entropy for cryptographic operations.
+
+**Fix**: Install and enable haveged in the rootfs:
+
+```bash
+apt-get install -y haveged
+systemctl enable haveged
+```
+
+### Sidecar keeps restarting (service restart loop)
+
+Check the systemd journal for errors:
+
+```bash
+# Inside VM or mount rootfs
+journalctl -u agent-sidecar.service
+```
+
+Common causes:
+- vsock not available (kernel module issue)
+- Claude binary not found or not executable
+- Permission issues with /workspace
 
 ### Checking sidecar logs
 
-The sidecar logs to `/var/log/agent-sidecar.log` inside the VM. To check:
+The sidecar logs to systemd journal. To check from outside the VM:
 
 ```bash
 # Mount the VM's rootfs (while VM is stopped)
 sudo mount /var/lib/lia/volumes/{task-id}-rootfs.ext4 /mnt/vmrootfs
-sudo cat /mnt/vmrootfs/var/log/agent-sidecar.log
+
+# Check journal
+sudo journalctl --root=/mnt/vmrootfs -u agent-sidecar.service
+
 sudo umount /mnt/vmrootfs
+```
+
+## Integration Testing
+
+Run the Claude streaming integration tests:
+
+```bash
+cd services/vm-api
+sudo ANTHROPIC_API_KEY=sk-... cargo test --test claude_streaming_test -- --nocapture --test-threads=1
+```
+
+### Available Tests
+
+| Test | Purpose | Duration |
+|------|---------|----------|
+| `test_claude_streaming_via_vsock` | Single-turn streaming verification | ~2 min |
+| `test_claude_multiturn_streaming` | Two-turn context retention | ~3 min |
+| `test_claude_comprehensive_conversation` | Full end-to-end with 8 turns | ~10 min |
+
+### Single-Turn Test (`test_claude_streaming_via_vsock`)
+
+Basic test that:
+1. Starts a Firecracker VM with vsock
+2. Connects to the sidecar via vsock
+3. Sends an Init message with a prompt
+4. Verifies streaming output (system init, stream events, result)
+
+### Multi-Turn Test (`test_claude_multiturn_streaming`)
+
+Tests conversation context retention:
+1. Turn 1: "Remember this number: 42"
+2. Turn 2: "What number did I ask you to remember?"
+3. Verifies Claude retained context
+
+### Comprehensive Test (`test_claude_comprehensive_conversation`)
+
+Full end-to-end test with 8 turns covering:
+
+1. **File upload**: Sends 3 files (data.json, config.txt, src/main.py) with Init message
+2. **File reading**: Claude reads and analyzes data.json
+3. **File creation**: Claude creates output.txt using tools
+4. **File verification**: Claude verifies the file was created
+5. **Context retention**: Claude recalls info from earlier turns without re-reading files
+6. **File modification**: Claude edits config.txt (changes debug=false to debug=true)
+7. **Bash execution**: Claude runs `python3 src/main.py`
+8. **Summary**: Claude summarizes all actions in the conversation
+
+Run just the comprehensive test:
+
+```bash
+sudo ANTHROPIC_API_KEY=sk-... cargo test --test claude_streaming_test test_claude_comprehensive_conversation -- --nocapture --test-threads=1
 ```

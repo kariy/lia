@@ -67,18 +67,41 @@ impl ClaudeInputMessage {
 }
 
 fn main() -> Result<()> {
-    // Initialize logging
+    // Initialize logging - log to file for debugging
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/log/agent-sidecar-debug.log")
+        .ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "agent_sidecar=info".into()),
+                .unwrap_or_else(|_| "agent_sidecar=debug".into()),
         )
+        .with_writer(move || {
+            if let Some(ref f) = log_file {
+                Box::new(f.try_clone().unwrap()) as Box<dyn std::io::Write>
+            } else {
+                Box::new(std::io::stderr()) as Box<dyn std::io::Write>
+            }
+        })
         .init();
 
     info!("Agent sidecar starting...");
 
     // Listen for host connection via vsock
-    let listen_fd = listen_vsock(VSOCK_PORT)?;
+    info!("Attempting to create vsock socket...");
+    let listen_fd = match listen_vsock(VSOCK_PORT) {
+        Ok(fd) => {
+            info!("vsock listen succeeded, fd={}", fd);
+            fd
+        }
+        Err(e) => {
+            tracing::error!("Failed to listen on vsock: {:?}", e);
+            return Err(e);
+        }
+    };
     info!("Listening on vsock port {}", VSOCK_PORT);
 
     // Accept connection from host
@@ -121,7 +144,13 @@ fn main() -> Result<()> {
 
     // Spawn Claude Code process with piped I/O
     // Use stream-json for both input and output for structured bidirectional communication
-    let mut child = Command::new("claude")
+    // Run as 'claude' user to allow --dangerously-skip-permissions (which doesn't work as root)
+    let mut child = Command::new("sudo")
+        .arg("-u")
+        .arg("claude")
+        .arg("-E")  // Preserve environment (for ANTHROPIC_API_KEY)
+        .arg("--")
+        .arg("/home/claude/.local/bin/claude")
         .arg("--print")
         .arg("--input-format")
         .arg("stream-json")
@@ -131,6 +160,7 @@ fn main() -> Result<()> {
         .arg("--include-partial-messages")
         .arg("--dangerously-skip-permissions")
         .env("ANTHROPIC_API_KEY", &api_key)
+        .env("HOME", "/home/claude")
         .current_dir("/workspace")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -259,15 +289,31 @@ fn main() -> Result<()> {
 }
 
 fn listen_vsock(port: u32) -> Result<RawFd> {
+    info!("Creating vsock socket with AF_VSOCK={}", libc::AF_VSOCK);
+
     // Create vsock socket
-    let fd = socket(
+    let fd = match socket(
         AddressFamily::Vsock,
         SockType::Stream,
         SockFlag::empty(),
         None,
-    )?;
+    ) {
+        Ok(fd) => {
+            info!("Socket created successfully, fd={}", fd.as_raw_fd());
+            fd
+        }
+        Err(e) => {
+            tracing::error!("socket() failed: {:?}", e);
+            anyhow::bail!("Failed to create vsock socket: {:?}", e);
+        }
+    };
 
     // Bind to listen on any CID, specified port
+    info!(
+        "Binding to vsock port {} with CID=VMADDR_CID_ANY ({})",
+        port,
+        libc::VMADDR_CID_ANY
+    );
     let addr = libc::sockaddr_vm {
         svm_family: libc::AF_VSOCK as u16,
         svm_reserved1: 0,
@@ -285,21 +331,22 @@ fn listen_vsock(port: u32) -> Result<RawFd> {
     };
 
     if ret < 0 {
-        anyhow::bail!(
-            "Failed to bind vsock: {}",
-            std::io::Error::last_os_error()
-        );
+        let err = std::io::Error::last_os_error();
+        tracing::error!("bind() failed: {} (errno={})", err, err.raw_os_error().unwrap_or(-1));
+        anyhow::bail!("Failed to bind vsock: {}", err);
     }
+    info!("Bind successful");
 
     // Listen for connections
     let raw_fd = fd.as_raw_fd();
+    info!("Calling listen() on fd={}", raw_fd);
     let ret = unsafe { libc::listen(raw_fd, 1) };
     if ret < 0 {
-        anyhow::bail!(
-            "Failed to listen on vsock: {}",
-            std::io::Error::last_os_error()
-        );
+        let err = std::io::Error::last_os_error();
+        tracing::error!("listen() failed: {} (errno={})", err, err.raw_os_error().unwrap_or(-1));
+        anyhow::bail!("Failed to listen on vsock: {}", err);
     }
+    info!("Listen successful");
 
     // Use into_raw_fd() to prevent OwnedFd from closing the socket when dropped
     Ok(fd.into_raw_fd())

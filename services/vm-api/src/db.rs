@@ -2,11 +2,13 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::error::{ApiError, ApiResult};
-use crate::models::{GuildTask, Task, TaskConfig, TaskStatus};
+use crate::models::{GuildTask, Task, TaskConfig, TaskSource, TaskStatus};
 
 pub async fn create_task(
     pool: &PgPool,
     user_id: &str,
+    source: TaskSource,
+    repositories: &[String],
     config: Option<TaskConfig>,
 ) -> ApiResult<Task> {
     let id = Uuid::new_v4();
@@ -14,14 +16,16 @@ pub async fn create_task(
 
     let task = sqlx::query_as::<_, Task>(
         r#"
-        INSERT INTO tasks (id, user_id, status, config, created_at)
-        VALUES ($1, $2, $3, $4, NOW())
+        INSERT INTO tasks (id, user_id, status, source, repositories, config, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, NOW())
         RETURNING *
         "#,
     )
     .bind(id)
     .bind(user_id)
     .bind(TaskStatus::Pending)
+    .bind(source)
+    .bind(repositories)
     .bind(config_json)
     .fetch_one(pool)
     .await?;

@@ -50,6 +50,8 @@ hyperlocal = "0.8"
 # Utilities
 rand = "0.8"
 base64 = "0.21"
+lazy_static = "1.4"
+regex = "1"
 
 [dev-dependencies]
 # SSH client for integration tests

@@ -1,4 +1,6 @@
 use chrono::{DateTime, Utc};
+use lazy_static::lazy_static;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -12,6 +14,37 @@ pub enum TaskStatus {
     Running,
     Suspended,
     Terminated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "VARCHAR", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum TaskSource {
+    Discord,
+    Web,
+}
+
+impl Default for TaskSource {
+    fn default() -> Self {
+        TaskSource::Web
+    }
+}
+
+impl std::fmt::Display for TaskSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TaskSource::Discord => write!(f, "discord"),
+            TaskSource::Web => write!(f, "web"),
+        }
+    }
+}
+
+lazy_static! {
+    static ref REPO_REGEX: Regex = Regex::new(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$").unwrap();
+}
+
+pub fn is_valid_repo_format(repo: &str) -> bool {
+    REPO_REGEX.is_match(repo)
 }
 
 impl std::fmt::Display for TaskStatus {
@@ -67,6 +100,8 @@ pub struct Task {
     pub id: Uuid,
     pub user_id: String,
     pub status: TaskStatus,
+    pub source: TaskSource,
+    pub repositories: Vec<String>,
     pub vm_id: Option<String>,
     pub config: Option<sqlx::types::Json<TaskConfig>>,
     pub created_at: DateTime<Utc>,
@@ -93,7 +128,11 @@ pub struct TaskFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTaskRequest {
     pub prompt: String,
-    pub user_id: String,
+    /// GitHub repositories in "owner/repo" format
+    pub repositories: Vec<String>,
+    /// Task source: discord or web
+    pub source: TaskSource,
+    pub user_id: Option<String>,
     pub guild_id: Option<String>,
     pub config: Option<TaskConfig>,
     pub files: Option<Vec<TaskFile>>,
@@ -107,6 +146,8 @@ pub struct TaskResponse {
     pub user_id: String,
     pub guild_id: Option<String>,
     pub status: TaskStatus,
+    pub source: TaskSource,
+    pub repositories: Vec<String>,
     pub vm_id: Option<String>,
     pub config: Option<TaskConfig>,
     pub created_at: DateTime<Utc>,
@@ -133,6 +174,8 @@ impl TaskResponse {
             user_id: task.user_id,
             guild_id,
             status: task.status,
+            source: task.source,
+            repositories: task.repositories,
             vm_id: task.vm_id,
             config: task.config.map(|c| c.0),
             created_at: task.created_at,

@@ -50,8 +50,11 @@ export const list = {
         const createdAt = Math.floor(
           new Date(task.created_at).getTime() / 1000
         );
+        const repoDisplay = task.repositories.length > 0
+          ? truncate(task.repositories.join(", "), 50)
+          : "No repository";
         embed.addFields({
-          name: `${formatStatus(task.status)} ${truncate(task.prompt, 50)}`,
+          name: `${formatStatus(task.status)} ${repoDisplay}`,
           value: `ID: \`${task.id}\`\nCreated: <t:${createdAt}:R>\n[Open](${task.web_url})`,
           inline: false,
         });

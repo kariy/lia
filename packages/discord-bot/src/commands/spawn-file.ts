@@ -11,6 +11,13 @@ export const spawnFile = {
     .setDescription("Spawn an AI agent with a file attachment")
     .addStringOption((option) =>
       option
+        .setName("repo")
+        .setDescription("GitHub repository in owner/repo format")
+        .setRequired(true)
+        .setMaxLength(200)
+    )
+    .addStringOption((option) =>
+      option
         .setName("prompt")
         .setDescription("The prompt for the AI agent")
         .setRequired(true)
@@ -24,10 +31,20 @@ export const spawnFile = {
     ),
 
   async execute(interaction: ChatInputCommandInteraction) {
+    const repo = interaction.options.getString("repo", true);
     const prompt = interaction.options.getString("prompt", true);
     const attachment = interaction.options.getAttachment("file", true);
 
     await interaction.deferReply();
+
+    // Validate repository format
+    const repoRegex = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+    if (!repoRegex.test(repo)) {
+      await interaction.editReply({
+        content: "Invalid repository format. Please use `owner/repo` format (e.g., `facebook/react`).",
+      });
+      return;
+    }
 
     try {
       // Fetch file content
@@ -48,6 +65,8 @@ export const spawnFile = {
 
       const task = await apiClient.createTask({
         prompt,
+        repositories: [repo],
+        source: "discord",
         user_id: interaction.user.id,
         guild_id: interaction.guildId ?? undefined,
         files: [
@@ -65,6 +84,7 @@ export const spawnFile = {
         .addFields(
           { name: "Task ID", value: `\`${task.id}\``, inline: true },
           { name: "Status", value: formatStatus(task.status), inline: true },
+          { name: "Repository", value: `\`${repo}\``, inline: true },
           { name: "File", value: `\`${attachment.name}\``, inline: true },
           { name: "Prompt", value: truncate(prompt, 1024) }
         )

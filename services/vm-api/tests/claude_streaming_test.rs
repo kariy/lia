@@ -9,9 +9,16 @@
 //! - Running as root (for TAP device and Firecracker)
 //! - Firecracker binary installed at /usr/local/bin/firecracker
 //! - Kernel at /var/lib/lia/kernel/vmlinux
-//! - Rootfs at /var/lib/lia/rootfs/rootfs.ext4 (with agent-sidecar and claude installed)
+//! - Rootfs at /var/lib/lia/rootfs/rootfs.ext4 with:
+//!   - agent-sidecar binary (musl-linked)
+//!   - Claude Code CLI installed (requires glibc - see note below)
 //! - Network bridge (lia-br0) configured
 //! - Valid ANTHROPIC_API_KEY environment variable
+//!
+//! IMPORTANT: The current Alpine-based rootfs uses musl libc, but the Claude Code
+//! CLI binary requires glibc. To run these tests, you must either:
+//! 1. Rebuild the rootfs using a glibc-based distro (Debian/Ubuntu minimal), or
+//! 2. Install glibc compatibility layer in Alpine (gcompat package)
 //!
 //! Run with: sudo ANTHROPIC_API_KEY=sk-... cargo test --test claude_streaming_test -- --nocapture --test-threads=1
 
@@ -375,6 +382,14 @@ impl TestVm {
             },
         )?;
 
+        // Wait a bit and check the log
+        thread::sleep(Duration::from_secs(2));
+        if let Ok(log_content) = fs::read_to_string(&log_path) {
+            println!("\n=== Firecracker Log After Start ===");
+            println!("{}", log_content);
+            println!("=== End Firecracker Log ===\n");
+        }
+
         Ok(TestVm {
             socket_path,
             vsock_uds_path,
@@ -603,8 +618,9 @@ fn test_claude_streaming_via_vsock() {
     println!("VM started");
 
     // Wait for sidecar to be ready (it listens on vsock port 5000)
-    println!("Waiting for agent-sidecar to start...");
-    thread::sleep(Duration::from_secs(10)); // Give VM time to boot
+    // Debian boots slower than Alpine, so we need more time
+    println!("Waiting for agent-sidecar to start (30s for Debian boot)...");
+    thread::sleep(Duration::from_secs(30)); // Give VM time to boot
 
     // Connect to sidecar via vsock
     let mut stream = match connect_vsock(&vm.vsock_uds_path, Duration::from_secs(60)) {
@@ -744,4 +760,349 @@ fn test_claude_multiturn_streaming() {
     }
 
     println!("Multi-turn streaming test PASSED!");
+}
+
+/// Comprehensive end-to-end test with long conversation, file operations, and tool usage
+#[test]
+fn test_claude_comprehensive_conversation() {
+    println!("\n=== Claude Code Comprehensive Conversation Test ===\n");
+    println!("This test exercises:");
+    println!("  - 5+ turn conversation with context retention");
+    println!("  - File upload and reading");
+    println!("  - Tool usage (bash commands, file creation)");
+    println!("  - Error handling\n");
+
+    if let Err(e) = check_prerequisites() {
+        println!("Skipping test: {}", e);
+        return;
+    }
+
+    let api_key = std::env::var("ANTHROPIC_API_KEY").unwrap();
+
+    println!("Starting Firecracker VM with vsock...");
+    let mut vm = match TestVm::start(TEST_VM_IP) {
+        Ok(vm) => vm,
+        Err(e) => {
+            panic!("Failed to start VM: {}", e);
+        }
+    };
+
+    println!("Waiting for Debian to boot (30s)...");
+    thread::sleep(Duration::from_secs(30));
+
+    let mut stream = match connect_vsock(&vm.vsock_uds_path, Duration::from_secs(60)) {
+        Ok(s) => s,
+        Err(e) => {
+            vm.stop();
+            panic!("Failed to connect to vsock: {}", e);
+        }
+    };
+
+    // Track conversation state
+    let mut turn_count = 0;
+    let mut conversation_succeeded = true;
+    let mut errors: Vec<String> = Vec::new();
+
+    // Helper to send input and read response
+    let send_and_receive = |stream: &mut UnixStream, msg: VsockMessage, turn: u32| -> Result<StreamingResults, String> {
+        let json = serde_json::to_string(&msg).unwrap() + "\n";
+        stream.write_all(json.as_bytes())
+            .map_err(|e| format!("Turn {}: Failed to send message: {}", turn, e))?;
+        println!("\n--- Turn {} sent ---", turn);
+
+        read_streaming_output(stream, Duration::from_secs(120))
+            .map_err(|e| format!("Turn {}: Failed to read response: {}", turn, e))
+    };
+
+    // ============================================
+    // Turn 1: Initialize with files
+    // ============================================
+    println!("\n========== TURN 1: Initialize with files ==========");
+    turn_count += 1;
+
+    let test_files = vec![
+        TaskFile {
+            name: "data.json".to_string(),
+            content: r#"{"name": "test-project", "version": "1.0.0", "items": [1, 2, 3]}"#.to_string(),
+        },
+        TaskFile {
+            name: "config.txt".to_string(),
+            content: "setting1=value1\nsetting2=value2\ndebug=false".to_string(),
+        },
+        TaskFile {
+            name: "src/main.py".to_string(),
+            content: "def hello():\n    print('Hello, World!')\n\nif __name__ == '__main__':\n    hello()".to_string(),
+        },
+    ];
+
+    let init_msg = VsockMessage::Init {
+        api_key: api_key.clone(),
+        prompt: "I've uploaded some files. Please list what files you see in /workspace and briefly describe what each one contains. Be concise.".to_string(),
+        files: Some(test_files),
+    };
+
+    match send_and_receive(&mut stream, init_msg, turn_count) {
+        Ok(results) => {
+            if !results.got_result {
+                errors.push(format!("Turn {}: No result received", turn_count));
+                conversation_succeeded = false;
+            }
+            let output = results.all_output.join("\n");
+            // Check if Claude acknowledged the files
+            if !output.contains("data.json") && !output.contains("config") {
+                println!("Warning: Claude may not have listed the files");
+            }
+            println!("Turn {} complete: got_result={}", turn_count, results.got_result);
+        }
+        Err(e) => {
+            errors.push(e);
+            conversation_succeeded = false;
+        }
+    }
+
+    // ============================================
+    // Turn 2: Read and analyze a file
+    // ============================================
+    if conversation_succeeded {
+        println!("\n========== TURN 2: Read and analyze file ==========");
+        turn_count += 1;
+
+        let input_msg = VsockMessage::Input {
+            data: "Read the data.json file and tell me: what is the project name and how many items are in the array?".to_string(),
+        };
+
+        match send_and_receive(&mut stream, input_msg, turn_count) {
+            Ok(results) => {
+                if !results.got_result {
+                    errors.push(format!("Turn {}: No result received", turn_count));
+                    conversation_succeeded = false;
+                }
+                let output = results.all_output.join("\n");
+                // Check if Claude found the data
+                let found_name = output.contains("test-project");
+                let found_count = output.contains("3") || output.contains("three");
+                if !found_name || !found_count {
+                    println!("Warning: Claude may not have correctly read data.json");
+                    println!("  Found project name: {}, Found item count: {}", found_name, found_count);
+                }
+                println!("Turn {} complete", turn_count);
+            }
+            Err(e) => {
+                errors.push(e);
+                conversation_succeeded = false;
+            }
+        }
+    }
+
+    // ============================================
+    // Turn 3: Create a new file using bash/tools
+    // ============================================
+    if conversation_succeeded {
+        println!("\n========== TURN 3: Create a new file ==========");
+        turn_count += 1;
+
+        let input_msg = VsockMessage::Input {
+            data: "Create a new file called 'output.txt' in /workspace with the content 'COMPREHENSIVE_TEST_MARKER_12345'. Use bash or the write tool.".to_string(),
+        };
+
+        match send_and_receive(&mut stream, input_msg, turn_count) {
+            Ok(results) => {
+                if !results.got_result {
+                    errors.push(format!("Turn {}: No result received", turn_count));
+                    conversation_succeeded = false;
+                }
+                println!("Turn {} complete", turn_count);
+            }
+            Err(e) => {
+                errors.push(e);
+                conversation_succeeded = false;
+            }
+        }
+    }
+
+    // ============================================
+    // Turn 4: Verify the file was created
+    // ============================================
+    if conversation_succeeded {
+        println!("\n========== TURN 4: Verify file creation ==========");
+        turn_count += 1;
+
+        let input_msg = VsockMessage::Input {
+            data: "Now read output.txt and confirm it contains the marker. Also run 'ls -la /workspace' to show all files.".to_string(),
+        };
+
+        match send_and_receive(&mut stream, input_msg, turn_count) {
+            Ok(results) => {
+                if !results.got_result {
+                    errors.push(format!("Turn {}: No result received", turn_count));
+                    conversation_succeeded = false;
+                }
+                let output = results.all_output.join("\n");
+                if output.contains("COMPREHENSIVE_TEST_MARKER_12345") {
+                    println!("SUCCESS: File was created and contains the marker!");
+                } else {
+                    println!("Warning: Marker not found in output - file may not have been created correctly");
+                }
+                println!("Turn {} complete", turn_count);
+            }
+            Err(e) => {
+                errors.push(e);
+                conversation_succeeded = false;
+            }
+        }
+    }
+
+    // ============================================
+    // Turn 5: Context retention test
+    // ============================================
+    if conversation_succeeded {
+        println!("\n========== TURN 5: Context retention ==========");
+        turn_count += 1;
+
+        let input_msg = VsockMessage::Input {
+            data: "Without reading any files again, from our earlier conversation: what was the project name in data.json and what marker did you write to output.txt?".to_string(),
+        };
+
+        match send_and_receive(&mut stream, input_msg, turn_count) {
+            Ok(results) => {
+                if !results.got_result {
+                    errors.push(format!("Turn {}: No result received", turn_count));
+                    conversation_succeeded = false;
+                }
+                let output = results.all_output.join("\n");
+                let remembered_name = output.contains("test-project");
+                let remembered_marker = output.contains("COMPREHENSIVE_TEST_MARKER") || output.contains("12345");
+
+                if remembered_name && remembered_marker {
+                    println!("SUCCESS: Context was retained across turns!");
+                } else {
+                    println!("Warning: Context retention may be incomplete");
+                    println!("  Remembered project name: {}", remembered_name);
+                    println!("  Remembered marker: {}", remembered_marker);
+                }
+                println!("Turn {} complete", turn_count);
+            }
+            Err(e) => {
+                errors.push(e);
+                conversation_succeeded = false;
+            }
+        }
+    }
+
+    // ============================================
+    // Turn 6: Modify existing file
+    // ============================================
+    if conversation_succeeded {
+        println!("\n========== TURN 6: Modify existing file ==========");
+        turn_count += 1;
+
+        let input_msg = VsockMessage::Input {
+            data: "Edit config.txt to change 'debug=false' to 'debug=true'. Then show me the updated contents.".to_string(),
+        };
+
+        match send_and_receive(&mut stream, input_msg, turn_count) {
+            Ok(results) => {
+                if !results.got_result {
+                    errors.push(format!("Turn {}: No result received", turn_count));
+                    conversation_succeeded = false;
+                }
+                let output = results.all_output.join("\n");
+                if output.contains("debug=true") {
+                    println!("SUCCESS: File was modified correctly!");
+                } else {
+                    println!("Warning: File modification may not have worked");
+                }
+                println!("Turn {} complete", turn_count);
+            }
+            Err(e) => {
+                errors.push(e);
+                conversation_succeeded = false;
+            }
+        }
+    }
+
+    // ============================================
+    // Turn 7: Run a bash command
+    // ============================================
+    if conversation_succeeded {
+        println!("\n========== TURN 7: Run bash command ==========");
+        turn_count += 1;
+
+        let input_msg = VsockMessage::Input {
+            data: "Run 'python3 src/main.py' and show me the output.".to_string(),
+        };
+
+        match send_and_receive(&mut stream, input_msg, turn_count) {
+            Ok(results) => {
+                if !results.got_result {
+                    errors.push(format!("Turn {}: No result received", turn_count));
+                    conversation_succeeded = false;
+                }
+                let output = results.all_output.join("\n");
+                if output.contains("Hello") || output.contains("World") {
+                    println!("SUCCESS: Python script executed correctly!");
+                } else {
+                    println!("Warning: Python output not found (may have worked differently)");
+                }
+                println!("Turn {} complete", turn_count);
+            }
+            Err(e) => {
+                errors.push(e);
+                conversation_succeeded = false;
+            }
+        }
+    }
+
+    // ============================================
+    // Turn 8: Summarize the conversation
+    // ============================================
+    if conversation_succeeded {
+        println!("\n========== TURN 8: Conversation summary ==========");
+        turn_count += 1;
+
+        let input_msg = VsockMessage::Input {
+            data: "Give me a brief summary of everything we did in this conversation. List each action in one line.".to_string(),
+        };
+
+        match send_and_receive(&mut stream, input_msg, turn_count) {
+            Ok(results) => {
+                if !results.got_result {
+                    errors.push(format!("Turn {}: No result received", turn_count));
+                }
+                println!("Turn {} complete", turn_count);
+            }
+            Err(e) => {
+                errors.push(e);
+            }
+        }
+    }
+
+    // ============================================
+    // Final verification
+    // ============================================
+    println!("\n========================================");
+    println!("         TEST RESULTS SUMMARY          ");
+    println!("========================================\n");
+
+    println!("Total turns completed: {}", turn_count);
+    println!("Conversation succeeded: {}", conversation_succeeded);
+
+    if !errors.is_empty() {
+        println!("\nErrors encountered:");
+        for error in &errors {
+            println!("  - {}", error);
+        }
+    }
+
+    // Cleanup
+    vm.stop();
+
+    // Assertions
+    assert!(turn_count >= 5, "Should complete at least 5 turns, got {}", turn_count);
+    assert!(conversation_succeeded, "Conversation should succeed without critical errors");
+    assert!(errors.is_empty(), "Should have no errors: {:?}", errors);
+
+    println!("\n========================================");
+    println!("  COMPREHENSIVE CONVERSATION TEST PASSED!");
+    println!("========================================\n");
 }

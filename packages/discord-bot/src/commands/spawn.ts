@@ -11,6 +11,13 @@ export const spawn = {
     .setDescription("Spawn a new AI agent with a prompt")
     .addStringOption((option) =>
       option
+        .setName("repo")
+        .setDescription("GitHub repository in owner/repo format")
+        .setRequired(true)
+        .setMaxLength(200)
+    )
+    .addStringOption((option) =>
+      option
         .setName("prompt")
         .setDescription("The prompt for the AI agent")
         .setRequired(true)
@@ -18,13 +25,25 @@ export const spawn = {
     ),
 
   async execute(interaction: ChatInputCommandInteraction) {
+    const repo = interaction.options.getString("repo", true);
     const prompt = interaction.options.getString("prompt", true);
 
     await interaction.deferReply();
 
+    // Validate repository format
+    const repoRegex = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+    if (!repoRegex.test(repo)) {
+      await interaction.editReply({
+        content: "Invalid repository format. Please use `owner/repo` format (e.g., `facebook/react`).",
+      });
+      return;
+    }
+
     try {
       const task = await apiClient.createTask({
         prompt,
+        repositories: [repo],
+        source: "discord",
         user_id: interaction.user.id,
         guild_id: interaction.guildId ?? undefined,
       });
@@ -32,6 +51,7 @@ export const spawn = {
       const fields = [
         { name: "Task ID", value: `\`${task.id}\``, inline: true },
         { name: "Status", value: formatStatus(task.status), inline: true },
+        { name: "Repository", value: `\`${repo}\``, inline: true },
         { name: "Prompt", value: truncate(prompt, 1024) },
       ];
 
