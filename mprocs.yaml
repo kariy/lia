@@ -1,0 +1,14 @@
+procs:
+  api:
+    cmd: ["cargo", "run"]
+    cwd: "services/vm-api"
+    env:
+      RUST_LOG: "info,vm_api=debug"
+
+  web:
+    cmd: ["bun", "run", "dev"]
+    cwd: "packages/web-ui"
+
+  bot:
+    cmd: ["bun", "run", "dev"]
+    cwd: "packages/discord-bot"

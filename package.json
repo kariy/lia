@@ -1,0 +1,17 @@
+{
+  "name": "lia",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:bot": "cd packages/discord-bot && bun run dev",
+    "dev:web": "cd packages/web-ui && bun run dev",
+    "build:bot": "cd packages/discord-bot && bun run build",
+    "build:web": "cd packages/web-ui && bun run build",
+    "typecheck": "bun run --filter '*' typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}

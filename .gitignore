@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+target/
+
+# Build outputs
+dist/
+*.ext4
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Runtime
+*.pid
+*.sock
+
+# Lia specific
+/var/lib/lia/
+volumes/
+sockets/
