@@ -10,6 +10,7 @@ interface TaskState {
   messages: ParsedMessage[];
   ws: WebSocket | null;
   parser: MessageParser;
+  isScrolledToBottom: boolean;
 
   setTask: (task: TaskResponse) => void;
   setStatus: (status: TaskState["status"]) => void;
@@ -17,6 +18,7 @@ interface TaskState {
   processOutput: (data: string) => void;
   setWebSocket: (ws: WebSocket | null) => void;
   sendInput: (data: string) => void;
+  setIsScrolledToBottom: (value: boolean) => void;
   reset: () => void;
 }
 
@@ -27,10 +29,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   messages: [],
   ws: null,
   parser: new MessageParser(),
+  isScrolledToBottom: true,
 
   setTask: (task) => set({ task }),
   setStatus: (status) => set({ status }),
   setError: (error) => set({ error }),
+  setIsScrolledToBottom: (value) => set({ isScrolledToBottom: value }),
 
   processOutput: (data) => {
     const { parser } = get();
@@ -62,6 +66,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       messages: [],
       ws: null,
       parser: newParser,
+      isScrolledToBottom: true,
     });
   },
 }));

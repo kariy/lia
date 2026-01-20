@@ -3,12 +3,14 @@ import { useTaskStore } from "../store";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Send } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export function InputBar() {
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const sendInput = useTaskStore((state) => state.sendInput);
   const task = useTaskStore((state) => state.task);
+  const isScrolledToBottom = useTaskStore((state) => state.isScrolledToBottom);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,7 +37,10 @@ export function InputBar() {
   return (
     <form
       onSubmit={handleSubmit}
-      className="border-t bg-background p-4"
+      className={cn(
+        "border-t bg-background p-4 transition-shadow duration-200",
+        !isScrolledToBottom && "shadow-[0_-4px_12px_rgba(0,0,0,0.08)]"
+      )}
     >
       <div className="flex gap-2">
         <Textarea
