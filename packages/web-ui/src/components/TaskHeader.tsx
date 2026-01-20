@@ -4,7 +4,13 @@ import { resumeTask, stopTask } from "../api";
 import { useTaskStore } from "../store";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Copy } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Copy, MoreVertical } from "lucide-react";
 import { toast } from "sonner";
 
 interface TaskHeaderProps {
@@ -98,14 +104,22 @@ export function TaskHeader({ task }: TaskHeaderProps) {
           )}
 
           {(task.status === "running" || task.status === "suspended") && (
-            <Button
-              onClick={handleStop}
-              disabled={loading}
-              variant="outline"
-              size="sm"
-            >
-              {loading ? "Stopping..." : "End Session"}
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="h-8 w-8 p-0 data-[state=open]:bg-accent data-[state=open]:opacity-70">
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  destructive
+                  disabled={loading}
+                  onClick={handleStop}
+                >
+                  {loading ? "Stopping..." : "End Session"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       </header>
