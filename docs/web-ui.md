@@ -1,79 +1,96 @@
 # Web UI
 
-The Web UI is a React application that provides a real-time terminal interface for interacting with Claude Code agents running in Firecracker VMs.
+The Web UI is a React application that provides a real-time interface for interacting with Claude Code agents running in Firecracker VMs. It renders Claude's stream-json output as structured message components.
 
 ## Architecture
 
 ```
 packages/web-ui/
 ├── src/
-│   ├── main.tsx                 # App entry point with routing
-│   ├── App.tsx                  # Home/landing page component
+│   ├── main.tsx                 # App entry with routing and toast provider
 │   ├── store.ts                 # Zustand state management
-│   ├── api.ts                   # API client and WebSocket creation
-│   ├── index.css                # Global styles + xterm customization
+│   ├── api.ts                   # REST API client
+│   ├── index.css                # Global styles and CSS variables
 │   ├── components/
-│   │   ├── Terminal.tsx         # xterm.js terminal wrapper
-│   │   ├── TaskHeader.tsx       # Header with task info and controls
-│   │   └── InputBar.tsx         # Input textarea for user prompts
+│   │   ├── Layout.tsx           # Sidebar layout with task list
+│   │   ├── TaskHeader.tsx       # Header with status, SSH info, controls
+│   │   ├── InputBar.tsx         # Follow-up prompt input
+│   │   ├── ui/                  # Reusable UI components (shadcn-style)
+│   │   └── messages/            # Claude message renderers
+│   │       ├── MessageList.tsx  # Scrollable message container
+│   │       ├── TextMessage.tsx  # Markdown text rendering
+│   │       ├── ToolCallMessage.tsx  # Tool calls with collapsible details
+│   │       ├── UserInputMessage.tsx # User follow-up messages
+│   │       └── ResultMessage.tsx    # Session result summary
+│   ├── lib/
+│   │   ├── utils.ts             # Utility functions (cn, etc.)
+│   │   └── message-parser.ts    # Claude stream-json parser
+│   ├── types/
+│   │   └── claude-stream.ts     # TypeScript types for Claude output
 │   └── pages/
-│       └── TaskPage.tsx         # Main task view page
-├── vite.config.ts              # Vite configuration with API proxy
+│       ├── WelcomePage.tsx      # Landing page / new agent form
+│       ├── TaskPage.tsx         # Main task view
+│       ├── NewAgentPage.tsx     # Create new agent form
+│       └── DemoPage.tsx         # Demo with mock data
+├── tailwind.config.js           # Tailwind with shadcn theme
+├── vite.config.ts               # Vite with API proxy
 └── package.json
 ```
 
 ## Technology Stack
 
-- **Framework**: React 18.2.0 with React Router v6
-- **Build Tool**: Vite 5.0
-- **State Management**: Zustand 4.4.0
-- **Terminal**: xterm.js 5.3.0 with addons (fit, web-links)
-- **Styling**: Tailwind CSS 3.4.0
-- **Type Safety**: TypeScript 5.3
+- **Framework**: React 18 with React Router v6
+- **Build Tool**: Vite 5
+- **State Management**: Zustand
+- **Styling**: Tailwind CSS with CSS variables (white/gray theme)
+- **UI Components**: Radix UI primitives (shadcn-style)
+- **Markdown**: react-markdown with remark-gfm
+- **Notifications**: sonner (toast notifications)
+- **Animations**: tailwindcss-animate
+- **Type Safety**: TypeScript 5
 
 ## Routing
 
 | Route | Component | Purpose |
 |-------|-----------|---------|
-| `/` | `App.tsx` | Home/landing page with instructions |
-| `/tasks/:taskId` | `TaskPage.tsx` | Main task view with terminal |
+| `/` | `WelcomePage` | Landing page, create new agent |
+| `/tasks/:taskId` | `TaskPage` | Active task view with messages |
+| `/demo` | `DemoPage` | Demo mode with mock Claude output |
 
-## Components
+All routes use `Layout` which provides a collapsible sidebar with the task list.
 
-### TaskPage (`src/pages/TaskPage.tsx`)
+## Key Features
 
-Main container that orchestrates:
-- Task metadata fetching via REST API
-- WebSocket connection establishment
-- Layout of header, terminal, and input bar
-- Conditional rendering based on connection status
+### Message Rendering
 
-### Terminal (`src/components/Terminal.tsx`)
+Instead of a raw terminal, the UI renders Claude's stream-json output as structured components:
 
-xterm.js wrapper with features:
-- Dark VS Code-like theme
-- Font: Fira Code/Cascadia Code monospace
-- 10,000 line scrollback buffer
-- FitAddon for responsive sizing
-- WebLinksAddon for clickable URLs
-- Incremental output rendering via refs
+- **Text Messages**: Rendered as markdown with syntax highlighting
+- **Tool Calls**: Collapsible cards showing tool name, inputs, and outputs
+- **User Input**: Displays follow-up prompts from the user
+- **Results**: Session summary with cost, duration, and token usage
 
-### TaskHeader (`src/components/TaskHeader.tsx`)
+### Sidebar Layout
 
-Displays task information and controls:
-- Status badge with color coding and pulse animation
-- Task ID and truncated prompt
+- Collapsible sidebar showing all tasks
+- Task status indicators with color-coded badges
+- Click to navigate between tasks
+- "New Agent" button to create tasks
+
+### Task Header
+
+- Status badge with pulse animation for running tasks
+- Task ID display
+- SSH command with copy-to-clipboard (shows toast notification)
 - Resume button (when suspended)
-- End Session button with confirmation
-- SSH command display with copy-to-clipboard
+- "More options" dropdown with End Session (requires confirmation)
 
-### InputBar (`src/components/InputBar.tsx`)
+### Input Bar
 
-User input component:
-- Auto-expanding textarea
+- Auto-expanding textarea for follow-up prompts
 - Enter to send, Shift+Enter for newlines
 - Disabled when task is suspended
-- Auto-focuses on mount
+- Shadow effect when content is scrollable above
 
 ## State Management
 
@@ -81,79 +98,87 @@ Zustand store (`src/store.ts`):
 
 ```typescript
 interface TaskState {
-  task: TaskResponse | null;           // Current task metadata
+  task: TaskResponse | null;
   status: "idle" | "loading" | "error" | "connected";
   error: string | null;
-  output: string[];                    // Array of output chunks
-  ws: WebSocket | null;                // Active WebSocket connection
+  messages: ParsedMessage[];      // Parsed Claude messages
+  ws: WebSocket | null;
+  parser: MessageParser;          // Stream-json parser instance
+  isScrolledToBottom: boolean;    // For input bar shadow
 }
 ```
 
-Actions:
+Key actions:
 - `setTask()` - Update task metadata
-- `setStatus()` - Change connection status
-- `setError()` - Set error messages
-- `appendOutput()` - Add new output chunks
-- `clearOutput()` - Reset output array
-- `setWebSocket()` - Store WebSocket reference
-- `sendInput()` - Send input via WebSocket
-- `reset()` - Return to initial state
+- `processOutput()` - Parse stream-json line and update messages
+- `sendInput()` - Send user input via WebSocket
+- `reset()` - Clear state for new task
+
+## Message Parser
+
+The `MessageParser` class (`src/lib/message-parser.ts`) transforms Claude's stream-json output into structured messages:
+
+1. Parses JSON lines from the stream
+2. Handles streaming text deltas (builds up text incrementally)
+3. Buffers tool call JSON until complete
+4. Maintains message state across stream events
+
+Supported message types from Claude CLI:
+- `system` - Session initialization info
+- `stream_event` - Content blocks (text, tool_use)
+- `user` - Tool results
+- `result` - Session completion
 
 ## WebSocket Communication
 
 ### Connection
 
 ```typescript
-// Auto-detects secure WebSocket for HTTPS
 const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
 const url = `${protocol}//${host}/api/v1/tasks/${taskId}/stream`;
 ```
 
-### Message Types
+### Message Flow
 
 **Received from server:**
-- `output`: Terminal output data with timestamp
-- `status`: Task status updates (running, suspended, terminated)
+- `output`: Stream-json lines from Claude CLI
+- `status`: Task status updates
 - `error`: Error messages
 
 **Sent to server:**
-- `input`: User input for Claude Code
-
-### Connection Lifecycle
-
-1. `onopen`: Set status to "connected"
-2. `onmessage`: Parse JSON, dispatch to store
-3. `onerror`: Set status to "error"
-4. `onclose`: Set status to "idle"
+- `input`: User follow-up prompts
 
 ## REST API
 
-Endpoints used (`src/api.ts`):
-
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| GET | `/api/v1/tasks/{taskId}` | Fetch task metadata |
-| POST | `/api/v1/tasks/{taskId}/resume` | Resume suspended task |
-| DELETE | `/api/v1/tasks/{taskId}` | Stop/terminate task |
+| GET | `/api/v1/tasks` | List all tasks |
+| GET | `/api/v1/tasks/{id}` | Get task details |
+| POST | `/api/v1/tasks` | Create new task |
+| POST | `/api/v1/tasks/{id}/resume` | Resume suspended task |
+| DELETE | `/api/v1/tasks/{id}` | Terminate task |
 
-## Status Display
+## Styling
 
-| Status | Color | Animation |
-|--------|-------|-----------|
-| Pending | Yellow | - |
-| Starting | Blue | - |
-| Running | Green | Pulse |
-| Suspended | Orange | - |
-| Terminated | Gray | - |
+The UI uses a white/gray color palette defined via CSS variables:
+
+```css
+:root {
+  --background: 0 0% 100%;      /* White */
+  --foreground: 0 0% 10%;       /* Near black */
+  --muted: 0 0% 96%;            /* Light gray */
+  --border: 0 0% 90%;           /* Border gray */
+  --destructive: 0 72% 51%;     /* Red (for dangerous actions) */
+}
+```
 
 ## Development
 
 ```bash
-# Install dependencies
-bun install
-
 # Start development server (port 5173)
-bun run dev
+make dev-web
+# or
+cd packages/web-ui && bun run dev
 
 # Type checking
 bun run typecheck
@@ -162,38 +187,38 @@ bun run typecheck
 bun run build
 ```
 
-## Vite Configuration
-
-- Dev server on port 5173
-- API proxy: `/api` → `http://localhost:3000` (VM API)
-- React Fast Refresh enabled
-
 ## Data Flow
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                       Browser (Web-UI)                       │
+│                       Browser (Web UI)                       │
 ├─────────────────────────────────────────────────────────────┤
-│                                                               │
-│  TaskPage (Container)                                         │
-│  └─ Fetches task via REST: GET /api/v1/tasks/{id}           │
+│                                                              │
+│  Layout (Sidebar + Content)                                  │
+│  ├─ Sidebar: Task list, navigation                          │
+│  └─ Content: TaskPage / WelcomePage / DemoPage              │
+│                                                              │
+│  TaskPage                                                    │
+│  ├─ Fetches task via REST: GET /api/v1/tasks/{id}           │
 │  └─ Creates WebSocket: ws://.../api/v1/tasks/{id}/stream    │
-│                                                               │
-│  ┌─────────────────────────────────────────────────────────┐ │
-│  │  Zustand Store (useTaskStore)                           │ │
-│  │  ├─ task: TaskResponse                                  │ │
-│  │  ├─ status: connection status                           │ │
-│  │  ├─ output: string[]                                    │ │
-│  │  └─ ws: WebSocket                                       │ │
-│  └─────────────────────────────────────────────────────────┘ │
-│         ↑                                    ↓                │
-│  ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐   │
-│  │  TaskHeader      │  │  Terminal    │  │  InputBar    │   │
-│  │ (Status, SSH)    │  │ (xterm.js)   │  │ (Textarea)   │   │
-│  └──────────────────┘  └──────────────┘  └──────────────┘   │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  Zustand Store                                         │ │
+│  │  ├─ task: TaskResponse                                 │ │
+│  │  ├─ messages: ParsedMessage[]                          │ │
+│  │  ├─ parser: MessageParser                              │ │
+│  │  └─ ws: WebSocket                                      │ │
+│  └────────────────────────────────────────────────────────┘ │
+│         ↑                                    ↓               │
+│  ┌──────────────┐  ┌────────────────┐  ┌──────────────┐    │
+│  │ TaskHeader   │  │  MessageList   │  │  InputBar    │    │
+│  │ (Status,SSH) │  │  (Text,Tools)  │  │  (Textarea)  │    │
+│  └──────────────┘  └────────────────┘  └──────────────┘    │
 └─────────────────────────────────────────────────────────────┘
-       ↕  (REST/WebSocket)
+       ↕  (REST / WebSocket)
 ┌─────────────────────────────────────────────────────────────┐
 │                    VM API Server (Rust)                      │
+│                           ↕                                  │
+│                    Claude Code (VM)                          │
 └─────────────────────────────────────────────────────────────┘
 ```
