@@ -6,12 +6,11 @@ import { Textarea } from "@/components/ui/textarea";
 
 interface NewAgentPageProps {
   onTaskCreated: () => void;
-  onCancel: () => void;
 }
 
 const REPO_REGEX = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
 
-export function NewAgentPage({ onTaskCreated, onCancel }: NewAgentPageProps) {
+export function NewAgentPage({ onTaskCreated }: NewAgentPageProps) {
   const navigate = useNavigate();
   const [repository, setRepository] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -42,16 +41,10 @@ export function NewAgentPage({ onTaskCreated, onCancel }: NewAgentPageProps) {
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Escape") {
-      onCancel();
-    }
-  }
-
   return (
     <div className="flex h-full items-center justify-center bg-background p-6">
       <div className="w-full max-w-xl">
-        <form onSubmit={handleSubmit} onKeyDown={handleKeyDown}>
+        <form onSubmit={handleSubmit}>
           <h2 className="text-lg font-semibold text-foreground mb-4">
             New Agent
           </h2>
@@ -99,22 +92,12 @@ export function NewAgentPage({ onTaskCreated, onCancel }: NewAgentPageProps) {
           {error && (
             <p className="text-sm text-destructive mb-4">{error}</p>
           )}
-          <div className="flex gap-3">
-            <Button
-              type="submit"
-              disabled={!prompt.trim() || !repository.trim() || !isValidRepo || isSubmitting}
-            >
-              {isSubmitting ? "Creating..." : "Create Agent"}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onCancel}
-              disabled={isSubmitting}
-            >
-              Cancel
-            </Button>
-          </div>
+          <Button
+            type="submit"
+            disabled={!prompt.trim() || !repository.trim() || !isValidRepo || isSubmitting}
+          >
+            {isSubmitting ? "Creating..." : "Create Agent"}
+          </Button>
         </form>
       </div>
     </div>

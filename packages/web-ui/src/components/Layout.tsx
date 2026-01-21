@@ -4,7 +4,7 @@ import { listTasks } from "../api";
 import type { TaskResponse } from "@lia/shared";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Plus, ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NewAgentPage } from "../pages/NewAgentPage";
 
@@ -13,18 +13,13 @@ export function Layout() {
   const [tasks, setTasks] = useState<TaskResponse[]>([]);
   const [isLoadingTasks, setIsLoadingTasks] = useState(true);
   const [isCollapsed, setIsCollapsed] = useState(false);
-  const [showNewAgent, setShowNewAgent] = useState(false);
+
+  // Show NewAgentPage when no task is selected
+  const showNewAgent = !taskId;
 
   useEffect(() => {
     loadTasks();
   }, []);
-
-  // Close new agent form when navigating to a task
-  useEffect(() => {
-    if (taskId) {
-      setShowNewAgent(false);
-    }
-  }, [taskId]);
 
   async function loadTasks() {
     try {
@@ -39,11 +34,6 @@ export function Layout() {
 
   function handleTaskCreated() {
     loadTasks();
-    setShowNewAgent(false);
-  }
-
-  function handleCancel() {
-    setShowNewAgent(false);
   }
 
   function getStatusVariant(status: string) {
@@ -90,7 +80,7 @@ export function Layout() {
         {/* Sidebar Header */}
         <div className="flex items-center justify-between border-b px-3 py-3">
           {!isCollapsed && (
-            <Link to="/" className="flex items-center gap-2" onClick={() => setShowNewAgent(false)}>
+            <Link to="/" className="flex items-center gap-2">
               <span className="text-lg font-semibold text-foreground">Lia</span>
             </Link>
           )}
@@ -110,19 +100,6 @@ export function Layout() {
 
         {!isCollapsed && (
           <>
-            {/* New Task Button */}
-            <div className="border-b p-3">
-              <Button
-                onClick={() => setShowNewAgent(true)}
-                className="w-full"
-                size="sm"
-                variant={showNewAgent ? "secondary" : "default"}
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                New Agent
-              </Button>
-            </div>
-
             {/* Task List */}
             <div className="flex-1 overflow-y-auto">
               {isLoadingTasks ? (
@@ -139,10 +116,9 @@ export function Layout() {
                     <Link
                       key={task.id}
                       to={`/tasks/${task.id}`}
-                      onClick={() => setShowNewAgent(false)}
                       className={cn(
                         "flex flex-col gap-1 px-3 py-2 transition-colors hover:bg-accent",
-                        taskId === task.id && !showNewAgent && "bg-accent"
+                        taskId === task.id && "bg-accent"
                       )}
                     >
                       <div className="flex items-center justify-between gap-2">
@@ -171,7 +147,7 @@ export function Layout() {
       {/* Main Content */}
       <main className="flex-1 overflow-hidden">
         {showNewAgent ? (
-          <NewAgentPage onTaskCreated={handleTaskCreated} onCancel={handleCancel} />
+          <NewAgentPage onTaskCreated={handleTaskCreated} />
         ) : (
           <Outlet />
         )}
