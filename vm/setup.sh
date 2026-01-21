@@ -1,16 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
-# Setup script for Lia VM infrastructure
+# Setup script for Lia VM infrastructure (QEMU)
 # Run as root on the host machine
 
 LIA_DIR="/var/lib/lia"
-FIRECRACKER_VERSION="v1.6.0"
 BRIDGE_NAME="lia-br0"
 BRIDGE_IP="172.16.0.1"
 BRIDGE_SUBNET="172.16.0.0/24"
 
-echo "Setting up Lia VM infrastructure..."
+echo "Setting up Lia VM infrastructure (QEMU)..."
 
 # Check for KVM support
 if [ ! -e /dev/kvm ]; then
@@ -27,24 +26,22 @@ fi
 # Create directories
 echo "Creating directories..."
 mkdir -p ${LIA_DIR}/{kernel,rootfs,volumes,sockets,logs,taps}
+mkdir -p /var/run/lia
 chmod 755 ${LIA_DIR}
+chmod 755 /var/run/lia
 
-# Download Firecracker
-echo "Downloading Firecracker ${FIRECRACKER_VERSION}..."
-ARCH=$(uname -m)
-curl -fsSL -o /tmp/firecracker.tgz \
-    "https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${ARCH}.tgz"
+# Install QEMU if not present
+echo "Checking QEMU installation..."
+if ! command -v qemu-system-x86_64 &> /dev/null; then
+    echo "Installing QEMU..."
+    apt-get update
+    apt-get install -y qemu-system-x86 qemu-utils
+fi
 
-tar -xzf /tmp/firecracker.tgz -C /tmp
-mv /tmp/release-${FIRECRACKER_VERSION}-${ARCH}/firecracker-${FIRECRACKER_VERSION}-${ARCH} /usr/local/bin/firecracker
-mv /tmp/release-${FIRECRACKER_VERSION}-${ARCH}/jailer-${FIRECRACKER_VERSION}-${ARCH} /usr/local/bin/jailer
-chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
-rm -rf /tmp/firecracker.tgz /tmp/release-${FIRECRACKER_VERSION}-${ARCH}
+echo "QEMU installed: $(qemu-system-x86_64 --version | head -1)"
 
-echo "Firecracker installed: $(firecracker --version)"
-
-# Download kernel
-echo "Downloading kernel..."
+# Download/copy kernel
+echo "Setting up kernel..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd ${LIA_DIR}/kernel
 bash "${SCRIPT_DIR}/kernel/download-kernel.sh"
@@ -154,6 +151,8 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/bash -c '\
     modprobe tun; \
+    modprobe vhost_vsock; \
+    chmod 666 /dev/vhost-vsock 2>/dev/null || true; \
     ip link show ${BRIDGE_NAME} || ip link add name ${BRIDGE_NAME} type bridge; \
     ip addr show ${BRIDGE_NAME} | grep -q ${BRIDGE_IP} || ip addr add ${BRIDGE_IP}/24 dev ${BRIDGE_NAME}; \
     ip link set ${BRIDGE_NAME} up; \

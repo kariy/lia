@@ -4,7 +4,7 @@ use serde::Deserialize;
 pub struct AppConfig {
     pub server: ServerConfig,
     pub database: DatabaseConfig,
-    pub firecracker: FirecrackerConfig,
+    pub qemu: QemuConfig,
     pub vm: VmConfig,
     pub network: NetworkConfig,
     pub claude: ClaudeConfig,
@@ -28,11 +28,9 @@ pub struct DatabaseConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct FirecrackerConfig {
-    #[serde(default = "default_firecracker_bin")]
+pub struct QemuConfig {
+    #[serde(default = "default_qemu_bin")]
     pub bin_path: String,
-    #[serde(default = "default_jailer_bin")]
-    pub jailer_bin_path: String,
     #[serde(default = "default_kernel_path")]
     pub kernel_path: String,
     #[serde(default = "default_rootfs_path")]
@@ -43,6 +41,10 @@ pub struct FirecrackerConfig {
     pub sockets_dir: String,
     #[serde(default = "default_logs_dir")]
     pub logs_dir: String,
+    #[serde(default = "default_pids_dir")]
+    pub pids_dir: String,
+    #[serde(default = "default_machine_type")]
+    pub machine_type: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,16 +93,20 @@ fn default_max_connections() -> u32 {
     10
 }
 
-fn default_firecracker_bin() -> String {
-    "/usr/local/bin/firecracker".to_string()
-}
-
-fn default_jailer_bin() -> String {
-    "/usr/local/bin/jailer".to_string()
+fn default_qemu_bin() -> String {
+    "/usr/bin/qemu-system-x86_64".to_string()
 }
 
 fn default_kernel_path() -> String {
-    "/var/lib/lia/kernel/vmlinux".to_string()
+    "/var/lib/lia/kernel/vmlinuz".to_string()
+}
+
+fn default_pids_dir() -> String {
+    "/var/run/lia".to_string()
+}
+
+fn default_machine_type() -> String {
+    "q35".to_string()
 }
 
 fn default_rootfs_path() -> String {
@@ -165,13 +171,14 @@ impl AppConfig {
             .set_default("server.port", default_port() as i64)?
             .set_default("server.web_url", default_web_url())?
             .set_default("database.max_connections", default_max_connections() as i64)?
-            .set_default("firecracker.bin_path", default_firecracker_bin())?
-            .set_default("firecracker.jailer_bin_path", default_jailer_bin())?
-            .set_default("firecracker.kernel_path", default_kernel_path())?
-            .set_default("firecracker.rootfs_path", default_rootfs_path())?
-            .set_default("firecracker.volumes_dir", default_volumes_dir())?
-            .set_default("firecracker.sockets_dir", default_sockets_dir())?
-            .set_default("firecracker.logs_dir", default_logs_dir())?
+            .set_default("qemu.bin_path", default_qemu_bin())?
+            .set_default("qemu.kernel_path", default_kernel_path())?
+            .set_default("qemu.rootfs_path", default_rootfs_path())?
+            .set_default("qemu.volumes_dir", default_volumes_dir())?
+            .set_default("qemu.sockets_dir", default_sockets_dir())?
+            .set_default("qemu.logs_dir", default_logs_dir())?
+            .set_default("qemu.pids_dir", default_pids_dir())?
+            .set_default("qemu.machine_type", default_machine_type())?
             .set_default("vm.default_vcpu_count", default_vcpu_count() as i64)?
             .set_default("vm.default_memory_mb", default_memory_mb() as i64)?
             .set_default("vm.default_storage_gb", default_storage_gb() as i64)?

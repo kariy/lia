@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Lia is a Discord bot platform that spawns Claude Code AI agents in isolated Firecracker microVMs. Users interact via Discord commands and a React web UI with real-time terminal streaming.
+Lia is a Discord bot platform that spawns Claude Code AI agents in isolated QEMU VMs with KVM acceleration. Users interact via Discord commands and a React web UI with real-time terminal streaming.
 
 ## Build Commands
 
@@ -47,7 +47,7 @@ make db-migrate
 ## Architecture
 
 ```
-Discord User → Discord Bot (TypeScript/Bun) → VM API (Rust/Axum) → Firecracker VM
+Discord User → Discord Bot (TypeScript/Bun) → VM API (Rust/Axum) → QEMU VM
                                                    ↓
                                               PostgreSQL
                                                    ↓
@@ -58,9 +58,9 @@ Web UI (React/Vite) ←──WebSocket──→ VM API ←──vsock──→ A
 - `packages/discord-bot/` - Discord.js slash commands, calls VM API
 - `packages/web-ui/` - React + xterm.js terminal, Zustand state, WebSocket streaming
 - `packages/shared/` - Zod schemas shared between TypeScript packages
-- `services/vm-api/` - Rust API server, Firecracker lifecycle, vsock relay, task persistence
+- `services/vm-api/` - Rust API server, QEMU VM lifecycle, vsock relay, task persistence
 - `vm/agent-sidecar/` - Rust binary inside VM, manages Claude Code process and vsock I/O
-- `vm/rootfs/` - Alpine Linux rootfs build scripts
+- `vm/rootfs/` - Debian Linux rootfs build scripts
 - `vm/kernel/` - Kernel download scripts
 
 ## Key Patterns
@@ -76,7 +76,7 @@ Web UI (React/Vite) ←──WebSocket──→ VM API ←──vsock──→ A
 **Communication Protocols:**
 - REST: Task CRUD operations
 - WebSocket: Real-time terminal I/O (`/api/v1/tasks/{id}/stream`)
-- vsock: JSON-line protocol between host and VM sidecar
+- vsock: JSON-line protocol between host and VM via AF_VSOCK (direct, no UDS proxy)
 
 ## Infrastructure Setup (requires root + KVM)
 
@@ -95,13 +95,13 @@ Web UI (React/Vite) ←──WebSocket──→ VM API ←──vsock──→ A
 **Use when:** Setting up a new development/production machine from scratch.
 
 **What it does:**
-1. Installs system dependencies (curl, iptables, bridge-utils, etc.)
+1. Installs system dependencies (curl, iptables, bridge-utils, qemu-system-x86, etc.)
 2. Installs apk-tools for building Alpine rootfs
 3. Creates `/var/lib/lia/` directory structure
-4. Downloads and installs Firecracker v1.6.0
-5. Downloads the Firecracker kernel
+4. Verifies QEMU installation
+5. Downloads or copies the kernel
 6. Builds the agent-sidecar binary
-7. Builds the Alpine rootfs with Claude Code pre-installed
+7. Builds the Debian rootfs with Claude Code pre-installed
 8. Sets up network bridge (`lia-br0`) and NAT rules
 9. Creates systemd services for persistence
 
@@ -120,7 +120,7 @@ sudo bash vm/setup-all.sh
 - Re-applying iptables NAT rules
 
 **What it does:**
-1. Downloads Firecracker (if not present)
+1. Installs QEMU (if not present)
 2. Downloads kernel (if not present)
 3. Creates network bridge and NAT rules
 4. Creates helper scripts (`lia-create-tap`, `lia-delete-tap`)
@@ -144,9 +144,9 @@ sudo bash vm/setup.sh
 
 **What it does:**
 1. Creates 2GB sparse ext4 filesystem
-2. Installs Alpine Linux 3.19 with OpenRC
+2. Installs Debian Bookworm minimal
 3. Installs: nodejs, npm, git, openssh-server, python3, build tools
-4. Installs Claude Code via npm
+4. Installs Claude Code via installer script
 5. Copies agent-sidecar binary (if built)
 6. Configures SSH (public key auth only)
 7. Creates init scripts for networking and sidecar service
@@ -166,7 +166,7 @@ sudo cp rootfs.ext4 /var/lib/lia/rootfs/
 
 **Use when:** Kernel file is missing or corrupted (rarely needed manually).
 
-**What it does:** Downloads pre-built Firecracker kernel from AWS S3.
+**What it does:** Copies system kernel or downloads a cloud-optimized kernel.
 
 ```bash
 cd /var/lib/lia/kernel && sudo bash /path/to/vm/kernel/download-kernel.sh
@@ -176,12 +176,14 @@ cd /var/lib/lia/kernel && sudo bash /path/to/vm/kernel/download-kernel.sh
 
 ```
 /var/lib/lia/
-├── kernel/vmlinux       # Firecracker kernel (~25MB)
-├── rootfs/rootfs.ext4   # Alpine rootfs template (~500MB)
+├── kernel/vmlinuz       # Linux kernel for QEMU
+├── rootfs/rootfs.ext4   # Debian rootfs template (~500MB)
 ├── volumes/             # Per-VM persistent storage (created at runtime)
-├── sockets/             # Firecracker API sockets (created at runtime)
+├── sockets/             # QMP sockets (created at runtime)
 ├── logs/                # VM logs (created at runtime)
 └── taps/                # TAP device info (created at runtime)
+
+/var/run/lia/            # PID files for running VMs
 ```
 
 ### Network Configuration
@@ -222,4 +224,4 @@ Copy `.env.example` to `.env`. Key variables:
 - `DISCORD_TOKEN`, `DISCORD_CLIENT_ID` - Discord bot credentials
 - `LIA__DATABASE__URL` - PostgreSQL connection string
 - `LIA__CLAUDE__API_KEY` - Anthropic API key
-- `LIA__FIRECRACKER__*` - Paths to Firecracker binaries and VM artifacts
+- `LIA__QEMU__*` - Paths to QEMU binaries and VM artifacts

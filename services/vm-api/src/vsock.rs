@@ -1,26 +1,31 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
+use tokio_vsock::{VsockAddr, VsockStream};
 use uuid::Uuid;
 
 use crate::error::ApiResult;
 use crate::models::{TaskFile, VsockMessage, WsMessage};
 use crate::ws::WsRegistry;
 
+/// vsock port used by the agent sidecar in the VM
+const VSOCK_PORT: u32 = 5000;
+
+/// Maximum connection attempts (600 * 100ms = 60 seconds)
+const MAX_ATTEMPTS: u32 = 600;
+
 pub struct VsockRelay {
     task_id: Uuid,
-    vsock_path: PathBuf,
+    guest_cid: u32,
     ws_registry: Arc<WsRegistry>,
 }
 
 impl VsockRelay {
-    pub fn new(task_id: Uuid, vsock_path: PathBuf, ws_registry: Arc<WsRegistry>) -> Self {
+    pub fn new(task_id: Uuid, guest_cid: u32, ws_registry: Arc<WsRegistry>) -> Self {
         Self {
             task_id,
-            vsock_path,
+            guest_cid,
             ws_registry,
         }
     }
@@ -35,76 +40,44 @@ impl VsockRelay {
         let (input_tx, mut input_rx) = mpsc::channel::<String>(100);
 
         let task_id = self.task_id;
-        let vsock_path = self.vsock_path.clone();
+        let guest_cid = self.guest_cid;
         let ws_registry = self.ws_registry.clone();
 
-        // Wait for vsock to be ready and establish connection
-        // Firecracker vsock protocol: connect to UDS, send "CONNECT <port>\n", read "OK <local_port>\n"
-        // Debian takes ~30 seconds to boot, so we retry for up to 60 seconds
-        const VSOCK_PORT: u32 = 5000;
-        const MAX_ATTEMPTS: u32 = 600; // 600 * 100ms = 60 seconds
+        // Connect to the VM via vsock
+        // QEMU's vhost-vsock-pci device allows direct AF_VSOCK connections
+        // The guest CID is assigned when creating the VM
+        let vsock_addr = VsockAddr::new(guest_cid, VSOCK_PORT);
         let mut attempts = 0;
         let stream = loop {
-            match UnixStream::connect(&vsock_path).await {
-                Ok(mut stream) => {
-                    // Send CONNECT command to accept guest-initiated connection
-                    let connect_cmd = format!("CONNECT {}\n", VSOCK_PORT);
-                    if let Err(e) = stream.write_all(connect_cmd.as_bytes()).await {
-                        tracing::warn!("Failed to send CONNECT command: {}", e);
-                        attempts += 1;
-                        if attempts > MAX_ATTEMPTS {
-                            return Err(crate::error::ApiError::VmError(format!(
-                                "Failed to establish vsock connection after {} attempts ({}s)",
-                                MAX_ATTEMPTS, MAX_ATTEMPTS / 10
-                            )));
-                        }
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        continue;
-                    }
-
-                    // Read response (should be "OK <local_port>\n")
-                    let mut response = vec![0u8; 32];
-                    match stream.read(&mut response).await {
-                        Ok(n) if n > 0 => {
-                            let response_str = String::from_utf8_lossy(&response[..n]);
-                            if response_str.starts_with("OK ") {
-                                tracing::info!("vsock connection established: {}", response_str.trim());
-                                break stream;
-                            } else {
-                                tracing::warn!("Unexpected vsock response: {}", response_str.trim());
-                                attempts += 1;
-                                if attempts > MAX_ATTEMPTS {
-                                    return Err(crate::error::ApiError::VmError(format!(
-                                        "Failed to establish vsock connection: unexpected response"
-                                    )));
-                                }
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                                continue;
-                            }
-                        }
-                        Ok(_) => {
-                            tracing::warn!("Empty vsock response");
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to read vsock response: {}", e);
-                        }
-                    }
-                    attempts += 1;
-                    if attempts > MAX_ATTEMPTS {
-                        return Err(crate::error::ApiError::VmError(format!(
-                            "Failed to establish vsock connection after {}s",
-                            MAX_ATTEMPTS / 10
-                        )));
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            match VsockStream::connect(vsock_addr).await {
+                Ok(stream) => {
+                    tracing::info!(
+                        "vsock connection established to CID {} port {}",
+                        guest_cid,
+                        VSOCK_PORT
+                    );
+                    break stream;
                 }
                 Err(e) => {
                     attempts += 1;
                     if attempts > MAX_ATTEMPTS {
                         return Err(crate::error::ApiError::VmError(format!(
-                            "Failed to connect to vsock after {}s: {}",
-                            MAX_ATTEMPTS / 10, e
+                            "Failed to connect to vsock (CID {}, port {}) after {}s: {}",
+                            guest_cid,
+                            VSOCK_PORT,
+                            MAX_ATTEMPTS / 10,
+                            e
                         )));
+                    }
+                    // Log every 50 attempts (5 seconds)
+                    if attempts % 50 == 0 {
+                        tracing::debug!(
+                            "Waiting for vsock connection to CID {} (attempt {}/{}): {}",
+                            guest_cid,
+                            attempts,
+                            MAX_ATTEMPTS,
+                            e
+                        );
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }

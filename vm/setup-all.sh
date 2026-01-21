@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # =============================================================================
-# Lia VM Infrastructure Complete Setup
+# Lia VM Infrastructure Complete Setup (QEMU)
 # =============================================================================
-# This script sets up everything needed to run Lia VMs:
+# This script sets up everything needed to run Lia VMs using QEMU:
 #   1. System dependencies
-#   2. Firecracker binary
+#   2. QEMU installation
 #   3. Kernel
 #   4. Agent sidecar
 #   5. Rootfs with SSH support
@@ -27,7 +27,6 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # Configuration
 LIA_DIR="/var/lib/lia"
-FIRECRACKER_VERSION="v1.6.0"
 BRIDGE_NAME="lia-br0"
 BRIDGE_IP="172.16.0.1"
 BRIDGE_SUBNET="172.16.0.0/24"
@@ -107,6 +106,7 @@ install_dependencies() {
         build-essential \
         pkg-config \
         libssl-dev \
+        qemu-system-x86 \
         qemu-utils \
         debootstrap \
         e2fsprogs \
@@ -119,22 +119,6 @@ install_dependencies() {
     # Source cargo env if it exists
     [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env" 2>/dev/null || true
     [ -f "/root/.cargo/env" ] && source "/root/.cargo/env" 2>/dev/null || true
-
-    # # Install Rust if not present (required for building agent-sidecar)
-    # if ! command -v cargo &> /dev/null || ! cargo --version &> /dev/null 2>&1; then
-    #     log_info "Installing Rust..."
-    #     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-    #     [ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env" 2>/dev/null || true
-    #     [ -f "/root/.cargo/env" ] && source "/root/.cargo/env" 2>/dev/null || true
-    # fi
-
-    # # Ensure a default Rust toolchain is set
-    # if command -v rustup &> /dev/null; then
-    #     if ! rustup show active-toolchain &> /dev/null 2>&1; then
-    #         log_info "Setting default Rust toolchain..."
-    #         rustup default stable
-    #     fi
-    # fi
 
     # Install apk-tools for building Alpine rootfs
     if ! command -v apk &> /dev/null; then
@@ -174,54 +158,38 @@ create_directories() {
     log_info "Creating directories..."
 
     mkdir -p ${LIA_DIR}/{kernel,rootfs,volumes,sockets,logs,taps}
+    mkdir -p /var/run/lia
     chmod 755 ${LIA_DIR}
+    chmod 755 /var/run/lia
 
     log_success "Directories created at ${LIA_DIR}"
 }
 
 # =============================================================================
-# Step 3: Download and install Firecracker
+# Step 3: Verify QEMU installation
 # =============================================================================
-install_firecracker() {
-    log_info "Installing Firecracker ${FIRECRACKER_VERSION}..."
+verify_qemu() {
+    log_info "Verifying QEMU installation..."
 
-    if [ -f /usr/local/bin/firecracker ]; then
-        local current_version=$(/usr/local/bin/firecracker --version 2>/dev/null | head -1 || echo "unknown")
-        log_info "Firecracker already installed: ${current_version}"
-
-        # Check if we should update
-        if [[ "$current_version" == *"${FIRECRACKER_VERSION#v}"* ]]; then
-            log_success "Firecracker ${FIRECRACKER_VERSION} already installed, skipping"
-            return
-        fi
+    if ! command -v qemu-system-x86_64 &> /dev/null; then
+        log_error "QEMU not found after installation"
+        exit 1
     fi
 
-    local ARCH=$(uname -m)
-    local FC_URL="https://github.com/firecracker-microvm/firecracker/releases/download/${FIRECRACKER_VERSION}/firecracker-${FIRECRACKER_VERSION}-${ARCH}.tgz"
-
-    curl -fsSL -o /tmp/firecracker.tgz "${FC_URL}"
-    tar -xzf /tmp/firecracker.tgz -C /tmp
-
-    mv /tmp/release-${FIRECRACKER_VERSION}-${ARCH}/firecracker-${FIRECRACKER_VERSION}-${ARCH} /usr/local/bin/firecracker
-    mv /tmp/release-${FIRECRACKER_VERSION}-${ARCH}/jailer-${FIRECRACKER_VERSION}-${ARCH} /usr/local/bin/jailer
-    chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
-
-    rm -rf /tmp/firecracker.tgz /tmp/release-${FIRECRACKER_VERSION}-${ARCH}
-
-    log_success "Firecracker installed: $(firecracker --version)"
+    log_success "QEMU installed: $(qemu-system-x86_64 --version | head -1)"
 }
 
 # =============================================================================
-# Step 4: Download kernel
+# Step 4: Download/setup kernel
 # =============================================================================
 download_kernel() {
-    log_info "Downloading Firecracker kernel..."
+    log_info "Setting up kernel for QEMU..."
 
-    local KERNEL_PATH="${LIA_DIR}/kernel/vmlinux"
+    local KERNEL_PATH="${LIA_DIR}/kernel/vmlinuz"
 
     if [ -f "${KERNEL_PATH}" ]; then
         log_info "Kernel already exists at ${KERNEL_PATH}"
-        log_success "Kernel download skipped (already exists)"
+        log_success "Kernel setup skipped (already exists)"
         return
     fi
 
@@ -407,6 +375,8 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/bash -c '\\
     modprobe tun; \\
+    modprobe vhost_vsock; \\
+    chmod 666 /dev/vhost-vsock 2>/dev/null || true; \\
     ip link show ${BRIDGE_NAME} || ip link add name ${BRIDGE_NAME} type bridge; \\
     ip addr show ${BRIDGE_NAME} | grep -q ${BRIDGE_IP} || ip addr add ${BRIDGE_IP}/24 dev ${BRIDGE_NAME}; \\
     ip link set ${BRIDGE_NAME} up; \\
@@ -458,20 +428,20 @@ verify_installation() {
 
     local errors=0
 
-    # Check Firecracker
-    if ! command -v firecracker &> /dev/null; then
-        log_error "Firecracker not found"
+    # Check QEMU
+    if ! command -v qemu-system-x86_64 &> /dev/null; then
+        log_error "QEMU not found"
         errors=$((errors + 1))
     else
-        log_success "Firecracker: $(firecracker --version | head -1)"
+        log_success "QEMU: $(qemu-system-x86_64 --version | head -1)"
     fi
 
     # Check kernel
-    if [ ! -f "${LIA_DIR}/kernel/vmlinux" ]; then
-        log_error "Kernel not found at ${LIA_DIR}/kernel/vmlinux"
+    if [ ! -f "${LIA_DIR}/kernel/vmlinuz" ]; then
+        log_error "Kernel not found at ${LIA_DIR}/kernel/vmlinuz"
         errors=$((errors + 1))
     else
-        log_success "Kernel: $(du -h ${LIA_DIR}/kernel/vmlinux | cut -f1)"
+        log_success "Kernel: $(du -h ${LIA_DIR}/kernel/vmlinuz | cut -f1)"
     fi
 
     # Check rootfs
@@ -506,6 +476,13 @@ verify_installation() {
         log_success "KVM: available"
     fi
 
+    # Check vhost-vsock
+    if [ ! -e /dev/vhost-vsock ]; then
+        log_warn "vhost-vsock not available (vsock may not work)"
+    else
+        log_success "vhost-vsock: available"
+    fi
+
     if [ $errors -gt 0 ]; then
         log_error "Verification failed with ${errors} error(s)"
         return 1
@@ -521,14 +498,14 @@ verify_installation() {
 main() {
     echo ""
     echo "============================================"
-    echo "  Lia VM Infrastructure Setup"
+    echo "  Lia VM Infrastructure Setup (QEMU)"
     echo "============================================"
     echo ""
 
     preflight_checks
     install_dependencies
     create_directories
-    install_firecracker
+    verify_qemu
     download_kernel
     build_agent_sidecar
     build_rootfs
@@ -545,10 +522,11 @@ main() {
     echo "  VM subnet: ${BRIDGE_SUBNET}"
     echo ""
     echo "Paths:"
-    echo "  Kernel: ${LIA_DIR}/kernel/vmlinux"
+    echo "  Kernel: ${LIA_DIR}/kernel/vmlinuz"
     echo "  Rootfs: ${LIA_DIR}/rootfs/rootfs.ext4"
     echo "  Volumes: ${LIA_DIR}/volumes/"
     echo "  Sockets: ${LIA_DIR}/sockets/"
+    echo "  PIDs: /var/run/lia/"
     echo ""
     echo "Next steps:"
     echo "  1. Build the VM API: cd ${PROJECT_ROOT} && make build-api"

@@ -104,7 +104,7 @@ pub async fn create_task(
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<BootStage>();
 
         // Create progress callback that sends to channel
-        let progress_callback: crate::firecracker::ProgressCallback = Box::new(move |stage| {
+        let progress_callback: crate::qemu::ProgressCallback = Box::new(move |stage| {
             let _ = progress_tx.send(stage);
         });
 
@@ -152,10 +152,9 @@ pub async fn create_task(
                 // Progress: connecting to agent
                 send_progress(&channel_clone, BootStage::ConnectingAgent).await;
 
-                // Start vsock relay
-                let vsock_path = state_clone.vm_manager.get_vsock_path(&vm_info.vm_id);
+                // Start vsock relay using the VM's CID for direct AF_VSOCK connection
                 let relay =
-                    VsockRelay::new(task_id, vsock_path, state_clone.ws_registry.clone());
+                    VsockRelay::new(task_id, vm_info.cid, state_clone.ws_registry.clone());
 
                 match relay
                     .start(state_clone.config.claude.api_key.clone(), prompt, files)

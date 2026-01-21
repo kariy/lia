@@ -1,4 +1,7 @@
-//! Integration test for Claude Code streaming via vsock in Firecracker VMs
+//! LEGACY: Integration test for Claude Code streaming via vsock in Firecracker VMs
+//!
+//! NOTE: This test is for the old Firecracker-based infrastructure.
+//! For QEMU-based tests, use: qemu_integration_test.rs
 //!
 //! This test verifies that:
 //! 1. The agent-sidecar correctly spawns Claude Code with stream-json flags
@@ -14,11 +17,6 @@
 //!   - Claude Code CLI installed (requires glibc - see note below)
 //! - Network bridge (lia-br0) configured
 //! - Valid ANTHROPIC_API_KEY environment variable
-//!
-//! IMPORTANT: The current Alpine-based rootfs uses musl libc, but the Claude Code
-//! CLI binary requires glibc. To run these tests, you must either:
-//! 1. Rebuild the rootfs using a glibc-based distro (Debian/Ubuntu minimal), or
-//! 2. Install glibc compatibility layer in Alpine (gcompat package)
 //!
 //! Run with: sudo ANTHROPIC_API_KEY=sk-... cargo test --test claude_streaming_test -- --nocapture --test-threads=1
 

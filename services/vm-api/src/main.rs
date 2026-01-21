@@ -14,9 +14,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 mod config;
 mod db;
 mod error;
-mod firecracker;
 mod handlers;
 mod models;
+mod qemu;
 mod vsock;
 mod ws;
 
@@ -25,7 +25,7 @@ use config::AppConfig;
 pub struct AppState {
     pub db: sqlx::PgPool,
     pub config: AppConfig,
-    pub vm_manager: firecracker::VmManager,
+    pub vm_manager: qemu::VmManager,
     pub ws_registry: Arc<ws::WsRegistry>,
 }
 
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Database connected and migrations applied");
 
     // Initialize VM manager
-    let vm_manager = firecracker::VmManager::new(config.clone());
+    let vm_manager = qemu::VmManager::new(config.clone());
 
     // Initialize WebSocket registry
     let ws_registry = Arc::new(ws::WsRegistry::new());

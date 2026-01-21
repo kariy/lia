@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build a minimal Debian Linux rootfs for running Claude Code in Firecracker
+# Build a minimal Debian Linux rootfs for running Claude Code in QEMU VMs
 # Uses Debian instead of Alpine because Claude Code requires glibc
+# This rootfs is compatible with both QEMU and Firecracker hypervisors
 
 ROOTFS_SIZE="2G"
 ROOTFS_FILE="rootfs.ext4"
@@ -73,7 +74,8 @@ chroot ${MOUNT_DIR} /bin/bash -c "
         build-essential \
         iproute2 iputils-ping net-tools \
         procps sudo locales \
-        haveged
+        haveged \
+        kmod
 
     # Enable haveged for entropy (important for crypto operations in VM)
     systemctl enable haveged
@@ -89,7 +91,7 @@ chroot ${MOUNT_DIR} /bin/bash -c "
     locale-gen
 "
 
-# Configure systemd for Firecracker (no unnecessary services)
+# Configure systemd for VM environment (no unnecessary services)
 echo "Configuring systemd..."
 
 # Disable unnecessary services
@@ -272,11 +274,67 @@ WantedBy=multi-user.target
 EOF
 chroot ${MOUNT_DIR} /bin/bash -c "systemctl enable lia-network-init.service"
 
+# Install kernel modules for vsock (required for QEMU vhost-vsock-pci)
+echo "Installing kernel modules for vsock..."
+KERNEL_VERSION=$(uname -r)
+MODULES_SRC="/lib/modules/${KERNEL_VERSION}/kernel/net/vmw_vsock"
+
+if [ -d "${MODULES_SRC}" ]; then
+    mkdir -p ${MOUNT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/net/vmw_vsock
+
+    # Copy and decompress vsock modules
+    for mod in ${MODULES_SRC}/*.ko.zst; do
+        if [ -f "$mod" ]; then
+            modname=$(basename "$mod" .zst)
+            zstd -d "$mod" -o "${MOUNT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/net/vmw_vsock/${modname}" 2>/dev/null || \
+                cp "$mod" "${MOUNT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/net/vmw_vsock/"
+        fi
+    done
+
+    # Also copy uncompressed modules if they exist
+    for mod in ${MODULES_SRC}/*.ko; do
+        if [ -f "$mod" ]; then
+            cp "$mod" "${MOUNT_DIR}/lib/modules/${KERNEL_VERSION}/kernel/net/vmw_vsock/"
+        fi
+    done
+
+    # Copy modules.* metadata files
+    cp /lib/modules/${KERNEL_VERSION}/modules.builtin* ${MOUNT_DIR}/lib/modules/${KERNEL_VERSION}/ 2>/dev/null || true
+    cp /lib/modules/${KERNEL_VERSION}/modules.order ${MOUNT_DIR}/lib/modules/${KERNEL_VERSION}/ 2>/dev/null || true
+
+    # Generate modules.dep
+    chroot ${MOUNT_DIR} /sbin/depmod -a ${KERNEL_VERSION} 2>/dev/null || true
+
+    echo "vsock kernel modules installed for kernel ${KERNEL_VERSION}"
+else
+    echo "Warning: vsock kernel modules not found at ${MODULES_SRC}"
+    echo "The VM may not be able to communicate via vsock"
+fi
+
+# Create systemd service for loading vsock modules at boot
+cat > ${MOUNT_DIR}/etc/systemd/system/vsock-modules.service << 'EOF'
+[Unit]
+Description=Load vsock kernel modules
+DefaultDependencies=no
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/modprobe vsock
+ExecStart=/sbin/modprobe vmw_vsock_virtio_transport
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
+EOF
+chroot ${MOUNT_DIR} /bin/bash -c "systemctl enable vsock-modules.service"
+
 # Create systemd service for agent-sidecar
 cat > ${MOUNT_DIR}/etc/systemd/system/agent-sidecar.service << 'EOF'
 [Unit]
 Description=Lia Agent Sidecar
-After=network.target lia-network-init.service
+After=network.target lia-network-init.service vsock-modules.service
+Requires=vsock-modules.service
 
 [Service]
 Type=simple
@@ -285,7 +343,7 @@ Restart=on-failure
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-Environment="PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=/home/claude/.local/bin:/usr/local/bin:/usr/bin:/bin"
 WorkingDirectory=/workspace
 
 [Install]

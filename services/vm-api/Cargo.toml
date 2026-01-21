@@ -38,11 +38,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 config = "0.14"
 dotenvy = "0.15"
 
-# Firecracker interaction
+# VM interaction
 nix = { version = "0.28", features = ["process", "signal", "socket", "net"] }
 libc = "0.2"
 
-# HTTP client (for Firecracker API)
+# vsock for VM communication
+tokio-vsock = "0.5"
+
+# HTTP client (for potential QEMU HTTP API)
 reqwest = { version = "0.11", features = ["json"] }
 hyper = { version = "0.14", features = ["client", "http1"] }
 hyperlocal = "0.8"
@@ -58,6 +61,8 @@ regex = "1"
 ssh2 = "0.9"
 tempfile = "3"
 libc = "0.2"
+# vsock for integration tests (sync version for simpler test code)
+vsock = "0.4"
 
 [[test]]
 name = "ssh_integration_test"
@@ -66,3 +71,7 @@ path = "tests/ssh_integration_test.rs"
 [[test]]
 name = "claude_streaming_test"
 path = "tests/claude_streaming_test.rs"
+
+[[test]]
+name = "qemu_integration_test"
+path = "tests/qemu_integration_test.rs"

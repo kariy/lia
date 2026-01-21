@@ -1,0 +1,61 @@
+# Lia VM API Configuration
+# This is the default configuration file. Override with config/local.toml or environment variables.
+
+[server]
+host = "0.0.0.0"
+port = 8811
+web_url = "http://localhost:5173"
+
+[database]
+# url = "postgresql://localhost/lia"  # Set via LIA__DATABASE__URL env var
+max_connections = 10
+
+[qemu]
+# Path to QEMU binary
+bin_path = "/usr/bin/qemu-system-x86_64"
+
+# Path to kernel (vmlinuz for QEMU, not vmlinux like Firecracker)
+kernel_path = "/var/lib/lia/kernel/vmlinuz"
+
+# Path to rootfs template
+rootfs_path = "/var/lib/lia/rootfs/rootfs.ext4"
+
+# Directory for per-VM volumes
+volumes_dir = "/var/lib/lia/volumes"
+
+# Directory for QMP sockets
+sockets_dir = "/var/lib/lia/sockets"
+
+# Directory for VM logs
+logs_dir = "/var/lib/lia/logs"
+
+# Directory for PID files
+pids_dir = "/var/run/lia"
+
+# QEMU machine type (q35 for full PC emulation, microvm for minimal)
+machine_type = "q35"
+
+[vm]
+# Default VM resource allocation
+default_vcpu_count = 2
+default_memory_mb = 2048
+default_storage_gb = 50
+
+# VM idle timeout before auto-suspend (minutes)
+idle_timeout_minutes = 30
+
+# Starting CID for vsock (must be > 2, as 0=hypervisor, 1=local, 2=host)
+vsock_cid_start = 100
+
+[network]
+# Network bridge name
+bridge_name = "lia-br0"
+
+# Bridge IP address (gateway for VMs)
+bridge_ip = "172.16.0.1"
+
+# VM subnet
+subnet = "172.16.0.0/24"
+
+[claude]
+# api_key = ""  # Set via LIA__CLAUDE__API_KEY env var

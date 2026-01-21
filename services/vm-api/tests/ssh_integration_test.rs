@@ -1,8 +1,11 @@
-//! Integration test for SSH connectivity to Firecracker VMs
+//! LEGACY: Integration test for SSH connectivity to Firecracker VMs
+//!
+//! NOTE: This test is for the old Firecracker-based infrastructure.
+//! For QEMU-based tests, use: qemu_integration_test.rs
 //!
 //! This test requires:
 //! - Running as root (for TAP device creation)
-//! - Firecracker binary installed
+//! - Firecracker binary installed at /usr/local/bin/firecracker
 //! - Kernel and rootfs available
 //! - Network bridge (lia-br0) configured
 //!
