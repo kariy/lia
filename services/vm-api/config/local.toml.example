@@ -1,0 +1,9 @@
+# Local configuration overrides
+# Copy this file to local.toml and customize as needed.
+# Values here override config/default.toml.
+
+[database]
+url = "postgres://lia:lia@localhost:5432/lia"
+
+[claude]
+api_key = "sk-ant-..."

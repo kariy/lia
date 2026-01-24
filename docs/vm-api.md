@@ -1,6 +1,6 @@
 # VM API
 
-The VM API is a Rust web service built with Axum that manages Firecracker microVMs for Claude Code execution. It handles task lifecycle, VM orchestration, WebSocket streaming, and database persistence.
+The VM API is a Rust web service built with Axum that manages QEMU VMs for Claude Code execution. It handles task lifecycle, VM orchestration, WebSocket streaming, and database persistence.
 
 ## Architecture
 
@@ -12,12 +12,13 @@ services/vm-api/
 │   ├── models.rs         # Data structures
 │   ├── db.rs             # Database operations
 │   ├── handlers.rs       # HTTP endpoint handlers
-│   ├── firecracker.rs    # VM lifecycle management
+│   ├── qemu.rs           # VM lifecycle management
 │   ├── vsock.rs          # Host-to-VM communication
 │   ├── ws.rs             # WebSocket registry
 │   └── error.rs          # Error handling
 ├── config/
-│   └── default.toml      # Default configuration
+│   ├── default.toml      # Default configuration
+│   └── local.toml.example  # Template for local overrides
 ├── migrations/           # SQLx migrations
 └── Cargo.toml
 ```
@@ -527,35 +528,32 @@ WebSocket message format for terminal streaming.
 
 ## Configuration
 
-Three-level fallback (highest to lowest priority):
-1. Environment variables with `LIA__` prefix
-2. `config/local.toml` file
-3. `config/default.toml` file
+Config files only (highest to lowest priority):
+1. `config/local.toml` - User overrides (not committed)
+2. `config/default.toml` - Default values
 
-### Environment Variable Format
-
-Prefix: `LIA`, Separator: `__` (double underscore)
-
-Example: `LIA__DATABASE__URL` → `database.url`
+To get started, copy `config/local.toml.example` to `config/local.toml` and set the required values.
 
 ### Configuration Sections
 
 **ServerConfig**:
 - `host`: Bind address (default: "0.0.0.0")
-- `port`: HTTP port (default: 3000)
+- `port`: HTTP port (default: 8811)
 - `web_url`: Web UI URL (default: "http://localhost:5173")
 
 **DatabaseConfig**:
 - `url`: PostgreSQL connection string (required)
 - `max_connections`: Pool size (default: 10)
 
-**FirecrackerConfig**:
-- `bin_path`: Firecracker binary (default: "/usr/local/bin/firecracker")
-- `kernel_path`: VM kernel (default: "/var/lib/lia/kernel/vmlinux")
+**QemuConfig**:
+- `bin_path`: QEMU binary (default: "/usr/bin/qemu-system-x86_64")
+- `kernel_path`: VM kernel (default: "/var/lib/lia/kernel/vmlinuz")
 - `rootfs_path`: Base rootfs (default: "/var/lib/lia/rootfs/rootfs.ext4")
 - `volumes_dir`: VM volumes (default: "/var/lib/lia/volumes")
-- `sockets_dir`: vsock sockets (default: "/var/lib/lia/sockets")
+- `sockets_dir`: QMP sockets (default: "/var/lib/lia/sockets")
 - `logs_dir`: VM logs (default: "/var/lib/lia/logs")
+- `pids_dir`: PID files (default: "/var/run/lia")
+- `machine_type`: QEMU machine type (default: "q35")
 
 **VmConfig**:
 - `default_vcpu_count`: CPU cores (default: 2)

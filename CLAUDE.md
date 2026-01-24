@@ -69,7 +69,7 @@ Web UI (React/Vite) ←──WebSocket──→ VM API ←──vsock──→ A
 
 **Task State Machine:** `pending → starting → running → suspended/terminated`. Suspended VMs preserve storage and can be resumed.
 
-**Configuration (Rust):** Environment variables with `LIA__` prefix, double underscore separator (e.g., `LIA__SERVER__PORT`). Falls back to `config/local.toml` then `config/default.toml`.
+**Configuration (Rust):** Config files only. `config/local.toml` overrides `config/default.toml`. Copy `config/local.toml.example` to get started.
 
 **Database:** SQLx with compile-time query verification. Migrations in `services/vm-api/migrations/`.
 
@@ -222,6 +222,7 @@ All documentation lives in `./docs`. When adding or modifying features:
 
 Copy `.env.example` to `.env`. Key variables:
 - `DISCORD_TOKEN`, `DISCORD_CLIENT_ID` - Discord bot credentials
-- `LIA__DATABASE__URL` - PostgreSQL connection string
-- `LIA__CLAUDE__API_KEY` - Anthropic API key
-- `LIA__QEMU__*` - Paths to QEMU binaries and VM artifacts
+- `VM_API_URL` - URL to the VM API server (for Discord bot)
+- `WEB_URL` - URL to the web UI (for Discord bot)
+
+**VM API Configuration:** The VM API uses config files only (no environment variables). Copy `services/vm-api/config/local.toml.example` to `local.toml` and set `database.url` and `claude.api_key`.

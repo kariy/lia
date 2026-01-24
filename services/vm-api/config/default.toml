@@ -4,17 +4,18 @@ port = 8811
 web_url = "http://localhost:5173"
 
 [database]
-url = "postgres://lia:lia@0.0.0.0:5432/lia"
+url = "postgres://lia:lia@localhost:5432/lia"
 max_connections = 10
 
-[firecracker]
-bin_path = "/usr/local/bin/firecracker"
-jailer_bin_path = "/usr/local/bin/jailer"
-kernel_path = "/var/lib/lia/kernel/vmlinux"
+[qemu]
+bin_path = "/usr/bin/qemu-system-x86_64"
+kernel_path = "/var/lib/lia/kernel/vmlinuz"
 rootfs_path = "/var/lib/lia/rootfs/rootfs.ext4"
 volumes_dir = "/var/lib/lia/volumes"
 sockets_dir = "/var/lib/lia/sockets"
 logs_dir = "/var/lib/lia/logs"
+pids_dir = "/var/run/lia"
+machine_type = "q35"
 
 [vm]
 default_vcpu_count = 2
@@ -23,5 +24,10 @@ default_storage_gb = 50
 idle_timeout_minutes = 30
 vsock_cid_start = 100
 
+[network]
+bridge_name = "lia-br0"
+bridge_ip = "172.16.0.1"
+subnet = "172.16.0.0/24"
+
 [claude]
-api_key = ""  # Set via LIA__CLAUDE__API_KEY environment variable
+api_key = ""
