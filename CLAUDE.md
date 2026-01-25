@@ -55,10 +55,11 @@ Web UI (React/Vite) ←──WebSocket──→ VM API ←──vsock──→ A
 ```
 
 **Components:**
+- `api/` - Rust API server (Axum), QEMU VM lifecycle, vsock relay, task persistence
+- `cli/` - Rust CLI tool for viewing/streaming VM logs
 - `packages/discord-bot/` - Discord.js slash commands, calls VM API
 - `packages/web-ui/` - React + xterm.js terminal, Zustand state, WebSocket streaming
 - `packages/shared/` - Zod schemas shared between TypeScript packages
-- `services/vm-api/` - Rust API server, QEMU VM lifecycle, vsock relay, task persistence
 - `vm/agent-sidecar/` - Rust binary inside VM, manages Claude Code process and vsock I/O
 - `vm/rootfs/` - Debian Linux rootfs build scripts
 - `vm/kernel/` - Kernel download scripts
@@ -71,7 +72,7 @@ Web UI (React/Vite) ←──WebSocket──→ VM API ←──vsock──→ A
 
 **Configuration (Rust):** Config files only. `config/local.toml` overrides `config/default.toml`. Copy `config/local.toml.example` to get started.
 
-**Database:** SQLx with compile-time query verification. Migrations in `services/vm-api/migrations/`.
+**Database:** SQLx with compile-time query verification. Migrations in `api/migrations/`.
 
 **Communication Protocols:**
 - REST: Task CRUD operations
@@ -225,4 +226,4 @@ Copy `.env.example` to `.env`. Key variables:
 - `VM_API_URL` - URL to the VM API server (for Discord bot)
 - `WEB_URL` - URL to the web UI (for Discord bot)
 
-**VM API Configuration:** The VM API uses config files only (no environment variables). Copy `services/vm-api/config/local.toml.example` to `local.toml` and set `database.url` and `claude.api_key`.
+**VM API Configuration:** The VM API uses config files only (no environment variables). Copy `api/config/local.toml.example` to `local.toml` and set `database.url` and `claude.api_key`.
