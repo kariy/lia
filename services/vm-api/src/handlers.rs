@@ -1,3 +1,5 @@
+use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -5,17 +7,21 @@ use axum::{
         ws::{Message, WebSocket},
         Path, Query, State, WebSocketUpgrade,
     },
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     Json,
 };
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, Stream, StreamExt};
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, BufReader};
 use uuid::Uuid;
 
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::models::{
-    is_valid_repo_format, BootStage, CreateTaskRequest, ListTasksQuery, TaskListResponse,
-    TaskResponse, TaskStatus, WsMessage,
+    is_valid_repo_format, BootStage, CreateTaskRequest, ListTasksQuery, LogsQuery, LogsResponse,
+    StreamLogsQuery, TaskListResponse, TaskResponse, TaskStatus, WsMessage,
 };
 use crate::vsock::VsockRelay;
 use crate::AppState;
@@ -50,7 +56,10 @@ pub async fn create_task(
     }
 
     // Use a default user_id if not provided
-    let user_id = req.user_id.clone().unwrap_or_else(|| "anonymous".to_string());
+    let user_id = req
+        .user_id
+        .clone()
+        .unwrap_or_else(|| "anonymous".to_string());
 
     // Create task in database
     let task = db::create_task(
@@ -77,10 +86,7 @@ pub async fn create_task(
     let channel = state.ws_registry.get_or_create(task_id).await;
 
     // Helper to send progress updates
-    async fn send_progress(
-        channel: &crate::ws::TaskChannel,
-        stage: BootStage,
-    ) {
+    async fn send_progress(channel: &crate::ws::TaskChannel, stage: BootStage) {
         let msg = WsMessage::Progress {
             stage,
             message: stage.message().to_string(),
@@ -153,15 +159,16 @@ pub async fn create_task(
                 send_progress(&channel_clone, BootStage::ConnectingAgent).await;
 
                 // Start vsock relay using the VM's CID for direct AF_VSOCK connection
-                let relay =
-                    VsockRelay::new(task_id, vm_info.cid, state_clone.ws_registry.clone());
+                let relay = VsockRelay::new(task_id, vm_info.cid, state_clone.ws_registry.clone());
 
                 match relay
                     .start(state_clone.config.claude.api_key.clone(), prompt, files)
                     .await
                 {
-                    Ok(_input_tx) => {
+                    Ok(input_tx) => {
                         tracing::info!("vsock relay started for task {}", task_id);
+                        // Store the input sender in the channel for forwarding WebSocket input to VM
+                        channel_clone.set_input_sender(input_tx).await;
                         // Progress: initializing Claude
                         send_progress(&channel_clone, BootStage::InitializingClaude).await;
                         // Progress: ready (after a brief delay to allow Claude to start)
@@ -208,7 +215,11 @@ pub async fn create_task(
     // Return task response
     let task = db::get_task(&state.db, task_id).await?;
     let guild_id = db::get_guild_id_for_task(&state.db, task_id).await?;
-    Ok(Json(TaskResponse::from_task(task, guild_id, &state.config.server.web_url)))
+    Ok(Json(TaskResponse::from_task(
+        task,
+        guild_id,
+        &state.config.server.web_url,
+    )))
 }
 
 pub async fn get_task(
@@ -217,7 +228,11 @@ pub async fn get_task(
 ) -> ApiResult<Json<TaskResponse>> {
     let task = db::get_task(&state.db, id).await?;
     let guild_id = db::get_guild_id_for_task(&state.db, id).await?;
-    Ok(Json(TaskResponse::from_task(task, guild_id, &state.config.server.web_url)))
+    Ok(Json(TaskResponse::from_task(
+        task,
+        guild_id,
+        &state.config.server.web_url,
+    )))
 }
 
 pub async fn list_tasks(
@@ -236,7 +251,11 @@ pub async fn list_tasks(
     let mut task_responses = Vec::with_capacity(tasks.len());
     for task in tasks {
         let guild_id = db::get_guild_id_for_task(&state.db, task.id).await?;
-        task_responses.push(TaskResponse::from_task(task, guild_id, &state.config.server.web_url));
+        task_responses.push(TaskResponse::from_task(
+            task,
+            guild_id,
+            &state.config.server.web_url,
+        ));
     }
 
     Ok(Json(TaskListResponse {
@@ -287,14 +306,20 @@ pub async fn resume_task(
     if let Some(vm_id) = &task.vm_id {
         state.vm_manager.resume_vm(vm_id).await?;
     } else {
-        return Err(ApiError::InvalidState("Task has no associated VM".to_string()));
+        return Err(ApiError::InvalidState(
+            "Task has no associated VM".to_string(),
+        ));
     }
 
     // Update status to running
     let task = db::update_task_status(&state.db, id, TaskStatus::Running, None).await?;
     let guild_id = db::get_guild_id_for_task(&state.db, id).await?;
 
-    Ok(Json(TaskResponse::from_task(task, guild_id, &state.config.server.web_url)))
+    Ok(Json(TaskResponse::from_task(
+        task,
+        guild_id,
+        &state.config.server.web_url,
+    )))
 }
 
 pub async fn get_task_output(
@@ -375,9 +400,11 @@ async fn handle_ws(state: Arc<AppState>, task_id: Uuid, socket: WebSocket) {
                 if let Ok(msg) = serde_json::from_str::<WsMessage>(&text) {
                     match msg {
                         WsMessage::Input { data } => {
-                            // Forward input to vsock relay
-                            // This would need the input_tx stored somewhere
                             tracing::debug!("Received input for task {}: {}", task_id, data);
+                            // Forward input to the VM via vsock
+                            if !channel.send_input(data).await {
+                                tracing::warn!("Failed to forward input to VM for task {}", task_id);
+                            }
                         }
                         WsMessage::Ping => {
                             channel.send(WsMessage::Pong).await;
@@ -393,4 +420,180 @@ async fn handle_ws(state: Arc<AppState>, task_id: Uuid, socket: WebSocket) {
     }
 
     sender_task.abort();
+}
+
+/// Get VM logs (snapshot) - last N lines
+pub async fn get_vm_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<LogsQuery>,
+) -> ApiResult<Json<LogsResponse>> {
+    // Verify task exists
+    let _ = db::get_task(&state.db, id).await?;
+
+    // Construct log path: {logs_dir}/vm-{task_id}.log
+    let log_path = PathBuf::from(&state.config.qemu.logs_dir).join(format!("vm-{}.log", id));
+
+    // Read last N lines
+    let (lines, total_lines) = read_last_n_lines(&log_path, params.tail).await?;
+
+    Ok(Json(LogsResponse {
+        task_id: id,
+        lines,
+        total_lines,
+    }))
+}
+
+/// Stream VM logs via SSE (like tail -f)
+pub async fn stream_vm_logs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Query(params): Query<StreamLogsQuery>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    // Verify task exists
+    let _ = db::get_task(&state.db, id).await?;
+
+    // Construct log path
+    let log_path = PathBuf::from(&state.config.qemu.logs_dir).join(format!("vm-{}.log", id));
+
+    let stream = async_stream::stream! {
+        // Send init event
+        let init_data = serde_json::json!({
+            "task_id": id.to_string(),
+            "tail": params.tail
+        });
+        yield Ok(Event::default().event("init").data(init_data.to_string()));
+
+        // Check if file exists
+        if !log_path.exists() {
+            let error_data = serde_json::json!({
+                "error": "Log file not found"
+            });
+            yield Ok(Event::default().event("error").data(error_data.to_string()));
+            return;
+        }
+
+        // Read and send initial lines
+        match read_last_n_lines(&log_path, params.tail).await {
+            Ok((lines, _)) => {
+                for line in lines {
+                    let log_data = serde_json::json!({
+                        "line": format!("{}\n", line)
+                    });
+                    yield Ok(Event::default().event("log").data(log_data.to_string()));
+                }
+            }
+            Err(e) => {
+                let error_data = serde_json::json!({
+                    "error": format!("Failed to read log file: {}", e)
+                });
+                yield Ok(Event::default().event("error").data(error_data.to_string()));
+                return;
+            }
+        }
+
+        // Now tail the file for new content
+        let file = match tokio::fs::File::open(&log_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                let error_data = serde_json::json!({
+                    "error": format!("Failed to open log file: {}", e)
+                });
+                yield Ok(Event::default().event("error").data(error_data.to_string()));
+                return;
+            }
+        };
+
+        let mut reader = BufReader::new(file);
+
+        // Seek to end of file
+        if let Err(e) = reader.seek(std::io::SeekFrom::End(0)).await {
+            let error_data = serde_json::json!({
+                "error": format!("Failed to seek to end: {}", e)
+            });
+            yield Ok(Event::default().event("error").data(error_data.to_string()));
+            return;
+        }
+
+        let mut last_size = match tokio::fs::metadata(&log_path).await {
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        };
+
+        let mut heartbeat_interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        let mut poll_interval = tokio::time::interval(std::time::Duration::from_millis(500));
+
+        loop {
+            tokio::select! {
+                _ = poll_interval.tick() => {
+                    // Check for new content
+                    let current_size = match tokio::fs::metadata(&log_path).await {
+                        Ok(m) => m.len(),
+                        Err(_) => continue,
+                    };
+
+                    if current_size < last_size {
+                        // File was truncated, reopen and seek to beginning
+                        let new_file = match tokio::fs::File::open(&log_path).await {
+                            Ok(f) => f,
+                            Err(_) => continue,
+                        };
+                        reader = BufReader::new(new_file);
+                        last_size = 0;
+                    }
+
+                    // Read new lines
+                    let mut line = String::new();
+                    loop {
+                        line.clear();
+                        match reader.read_line(&mut line).await {
+                            Ok(0) => break, // No more data
+                            Ok(_) => {
+                                let log_data = serde_json::json!({
+                                    "line": line.clone()
+                                });
+                                yield Ok(Event::default().event("log").data(log_data.to_string()));
+                            }
+                            Err(_) => break,
+                        }
+                    }
+
+                    last_size = current_size;
+                }
+                _ = heartbeat_interval.tick() => {
+                    let heartbeat_data = serde_json::json!({
+                        "timestamp": chrono::Utc::now().timestamp()
+                    });
+                    yield Ok(Event::default().event("heartbeat").data(heartbeat_data.to_string()));
+                }
+            }
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+/// Helper function to read the last N lines from a file
+async fn read_last_n_lines(path: &PathBuf, n: usize) -> ApiResult<(Vec<String>, usize)> {
+    if !path.exists() {
+        return Ok((vec![], 0));
+    }
+
+    let content = tokio::fs::read_to_string(path).await.map_err(|e| {
+        ApiError::NotFound(format!("Failed to read log file: {}", e))
+    })?;
+
+    let all_lines: Vec<&str> = content.lines().collect();
+    let total_lines = all_lines.len();
+
+    let lines: Vec<String> = if all_lines.len() > n {
+        all_lines[all_lines.len() - n..]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        all_lines.iter().map(|s| s.to_string()).collect()
+    };
+
+    Ok((lines, total_lines))
 }

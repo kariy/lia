@@ -1,15 +1,12 @@
-.PHONY: all build install dev dev-api dev-web dev-bot clean setup setup-all test test-ssh
+.PHONY: all build install dev dev-api dev-web dev-bot clean setup setup-all test test-ssh dev-web-remote build-cli install-cli
 
 all: build
 
 # Build all components
-build: build-api build-sidecar build-shared build-web build-bot
+build: build-api build-shared build-web build-bot
 
 build-api:
 	cd services/vm-api && cargo build --release
-
-build-sidecar:
-	cd vm/agent-sidecar && cargo build --release
 
 build-shared:
 	cd packages/shared && bun run build
@@ -35,6 +32,9 @@ dev-api:
 dev-web:
 	cd packages/web-ui && bun run dev
 
+dev-web-remote:
+	cd packages/web-ui && bun run dev --host 0.0.0.0
+
 dev-bot:
 	cd packages/discord-bot && bun --env-file=../../.env run dev
 
@@ -45,7 +45,6 @@ deploy-commands:
 # Clean build artifacts
 clean:
 	cd services/vm-api && cargo clean
-	cd vm/agent-sidecar && cargo clean
 	rm -rf packages/web-ui/dist
 	rm -rf packages/discord-bot/dist
 	rm -rf node_modules
@@ -67,12 +66,11 @@ setup:
 typecheck:
 	bun run typecheck
 	cd services/vm-api && cargo check
-	cd vm/agent-sidecar && cargo check
 
 # Run tests
 test:
 	cd services/vm-api && cargo test
-	cd vm/agent-sidecar && cargo test
+	cd vm/agent-sidecar-python && python3 -m unittest test_agent_sidecar -v
 
 # Run SSH integration test (requires root and infrastructure setup)
 # Prerequisites: sudo bash vm/setup.sh && sudo bash vm/rootfs/build-rootfs.sh
@@ -84,3 +82,12 @@ test-ssh:
 # Usage: make test-claude ANTHROPIC_API_KEY=sk-...
 test-claude:
 	cd services/vm-api && sudo ANTHROPIC_API_KEY=$(ANTHROPIC_API_KEY) cargo test --test claude_streaming_test -- --nocapture --test-threads=1
+
+# Build CLI tool
+build-cli:
+	cd cli && cargo build --release
+
+# Install CLI tool to ~/.local/bin
+install-cli: build-cli
+	mkdir -p ~/.local/bin
+	cp cli/target/release/lia ~/.local/bin/

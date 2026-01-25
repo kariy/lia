@@ -9,6 +9,7 @@ use tower_http::{
     cors::{Any, CorsLayer},
     trace::TraceLayer,
 };
+use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod config;
@@ -31,8 +32,10 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load environment variables
-    dotenvy::dotenv().ok();
+    // Ensure we're running as root (required for QEMU/KVM and TAP devices)
+    if unsafe { libc::geteuid() } != 0 {
+        anyhow::bail!("vm-api must be run as root (required for QEMU/KVM and TAP network devices)");
+    }
 
     // Initialize tracing
     tracing_subscriber::registry()
@@ -46,6 +49,8 @@ async fn main() -> anyhow::Result<()> {
     // Load configuration
     let config = AppConfig::load()?;
 
+    info!(api_key = %config.claude.api_key, "Using Claude API KEY");
+
     // Connect to database
     let db = PgPoolOptions::new()
         .max_connections(config.database.max_connections)
@@ -55,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     // Run migrations
     sqlx::migrate!("./migrations").run(&db).await?;
 
-    tracing::info!("Database connected and migrations applied");
+    info!(url = %config.database.url, "Database connected and migrations applied");
 
     // Initialize VM manager
     let vm_manager = qemu::VmManager::new(config.clone());
@@ -86,6 +91,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/tasks/:id/resume", post(handlers::resume_task))
         .route("/api/v1/tasks/:id/output", get(handlers::get_task_output))
         .route("/api/v1/tasks/:id/stream", get(handlers::ws_stream))
+        .route("/api/v1/tasks/:id/logs", get(handlers::get_vm_logs))
+        .route("/api/v1/tasks/:id/logs/stream", get(handlers::stream_vm_logs))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);

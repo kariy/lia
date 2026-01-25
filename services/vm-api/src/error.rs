@@ -11,6 +11,9 @@ pub enum ApiError {
     #[error("Task not found: {0}")]
     TaskNotFound(String),
 
+    #[error("Not found: {0}")]
+    NotFound(String),
+
     #[error("Invalid request: {0}")]
     BadRequest(String),
 
@@ -40,6 +43,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
             ApiError::TaskNotFound(msg) => (StatusCode::NOT_FOUND, "TASK_NOT_FOUND", msg.clone()),
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             ApiError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone()),
             ApiError::VmError(msg) => {

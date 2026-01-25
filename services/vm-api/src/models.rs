@@ -280,3 +280,32 @@ pub enum VsockMessage {
     },
     Heartbeat,
 }
+
+// Query params for log endpoints
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogsQuery {
+    #[serde(default = "default_logs_tail")]
+    pub tail: usize,
+}
+
+fn default_logs_tail() -> usize {
+    100
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamLogsQuery {
+    #[serde(default = "default_stream_tail")]
+    pub tail: usize,
+}
+
+fn default_stream_tail() -> usize {
+    20
+}
+
+// Response for GET /logs
+#[derive(Debug, Clone, Serialize)]
+pub struct LogsResponse {
+    pub task_id: Uuid,
+    pub lines: Vec<String>,
+    pub total_lines: usize,
+}
