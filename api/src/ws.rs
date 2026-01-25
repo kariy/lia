@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use uuid::Uuid;
 
 use crate::models::WsMessage;
@@ -12,6 +12,8 @@ const CHANNEL_CAPACITY: usize = 1024;
 pub struct TaskChannel {
     pub sender: broadcast::Sender<WsMessage>,
     pub output_buffer: Arc<RwLock<Vec<WsMessage>>>,
+    /// Sender for forwarding input to the VM via vsock
+    input_sender: RwLock<Option<mpsc::Sender<String>>>,
 }
 
 impl TaskChannel {
@@ -20,6 +22,22 @@ impl TaskChannel {
         Self {
             sender,
             output_buffer: Arc::new(RwLock::new(Vec::new())),
+            input_sender: RwLock::new(None),
+        }
+    }
+
+    /// Set the input sender for forwarding input to the VM
+    pub async fn set_input_sender(&self, sender: mpsc::Sender<String>) {
+        *self.input_sender.write().await = Some(sender);
+    }
+
+    /// Send input to the VM via vsock
+    pub async fn send_input(&self, data: String) -> bool {
+        if let Some(sender) = self.input_sender.read().await.as_ref() {
+            sender.send(data).await.is_ok()
+        } else {
+            tracing::warn!("No input sender available for task");
+            false
         }
     }
 

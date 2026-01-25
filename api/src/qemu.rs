@@ -108,14 +108,14 @@ impl QmpClient {
 
         // Read QMP greeting
         let mut greeting_line = String::new();
-        reader.read_line(&mut greeting_line).await.map_err(|e| {
-            ApiError::VmError(format!("Failed to read QMP greeting: {}", e))
-        })?;
+        reader
+            .read_line(&mut greeting_line)
+            .await
+            .map_err(|e| ApiError::VmError(format!("Failed to read QMP greeting: {}", e)))?;
 
         // Parse greeting to verify it's QMP
-        let _greeting: QmpGreeting = serde_json::from_str(&greeting_line).map_err(|e| {
-            ApiError::VmError(format!("Failed to parse QMP greeting: {}", e))
-        })?;
+        let _greeting: QmpGreeting = serde_json::from_str(&greeting_line)
+            .map_err(|e| ApiError::VmError(format!("Failed to parse QMP greeting: {}", e)))?;
 
         // Send qmp_capabilities to enter command mode
         let caps_cmd = QmpCommand {
@@ -123,12 +123,14 @@ impl QmpClient {
             arguments: None,
         };
         let caps_json = serde_json::to_string(&caps_cmd).unwrap() + "\n";
-        writer.write_all(caps_json.as_bytes()).await.map_err(|e| {
-            ApiError::VmError(format!("Failed to send qmp_capabilities: {}", e))
-        })?;
-        writer.flush().await.map_err(|e| {
-            ApiError::VmError(format!("Failed to flush qmp_capabilities: {}", e))
-        })?;
+        writer
+            .write_all(caps_json.as_bytes())
+            .await
+            .map_err(|e| ApiError::VmError(format!("Failed to send qmp_capabilities: {}", e)))?;
+        writer
+            .flush()
+            .await
+            .map_err(|e| ApiError::VmError(format!("Failed to flush qmp_capabilities: {}", e)))?;
 
         // Read capabilities response
         let mut caps_response = String::new();
@@ -142,22 +144,24 @@ impl QmpClient {
             arguments,
         };
         let cmd_json = serde_json::to_string(&cmd).unwrap() + "\n";
-        writer.write_all(cmd_json.as_bytes()).await.map_err(|e| {
-            ApiError::VmError(format!("Failed to send QMP command: {}", e))
-        })?;
-        writer.flush().await.map_err(|e| {
-            ApiError::VmError(format!("Failed to flush QMP command: {}", e))
-        })?;
+        writer
+            .write_all(cmd_json.as_bytes())
+            .await
+            .map_err(|e| ApiError::VmError(format!("Failed to send QMP command: {}", e)))?;
+        writer
+            .flush()
+            .await
+            .map_err(|e| ApiError::VmError(format!("Failed to flush QMP command: {}", e)))?;
 
         // Read response
         let mut response_line = String::new();
-        reader.read_line(&mut response_line).await.map_err(|e| {
-            ApiError::VmError(format!("Failed to read QMP response: {}", e))
-        })?;
+        reader
+            .read_line(&mut response_line)
+            .await
+            .map_err(|e| ApiError::VmError(format!("Failed to read QMP response: {}", e)))?;
 
-        let response: QmpResponse = serde_json::from_str(&response_line).map_err(|e| {
-            ApiError::VmError(format!("Failed to parse QMP response: {}", e))
-        })?;
+        let response: QmpResponse = serde_json::from_str(&response_line)
+            .map_err(|e| ApiError::VmError(format!("Failed to parse QMP response: {}", e)))?;
 
         if let Some(error) = response.error {
             return Err(ApiError::VmError(format!(
@@ -313,14 +317,12 @@ impl VmManager {
         let mac_address = self.generate_mac(&ip_address);
 
         // Create paths
-        let qmp_socket_path = PathBuf::from(&self.config.qemu.sockets_dir)
-            .join(format!("{}.qmp", vm_id));
-        let volume_path = PathBuf::from(&self.config.qemu.volumes_dir)
-            .join(format!("{}.ext4", task_id));
-        let log_path =
-            PathBuf::from(&self.config.qemu.logs_dir).join(format!("{}.log", vm_id));
-        let pid_file =
-            PathBuf::from(&self.config.qemu.pids_dir).join(format!("{}.pid", vm_id));
+        let qmp_socket_path =
+            PathBuf::from(&self.config.qemu.sockets_dir).join(format!("{}.qmp", vm_id));
+        let volume_path =
+            PathBuf::from(&self.config.qemu.volumes_dir).join(format!("{}.ext4", task_id));
+        let log_path = PathBuf::from(&self.config.qemu.logs_dir).join(format!("{}.log", vm_id));
+        let pid_file = PathBuf::from(&self.config.qemu.pids_dir).join(format!("{}.pid", vm_id));
 
         // Ensure directories exist
         tokio::fs::create_dir_all(&self.config.qemu.sockets_dir)
@@ -346,8 +348,8 @@ impl VmManager {
         self.create_sparse_volume(&volume_path, storage_gb).await?;
 
         // Copy rootfs for this VM
-        let vm_rootfs_path = PathBuf::from(&self.config.qemu.volumes_dir)
-            .join(format!("{}-rootfs.ext4", task_id));
+        let vm_rootfs_path =
+            PathBuf::from(&self.config.qemu.volumes_dir).join(format!("{}-rootfs.ext4", task_id));
         tokio::fs::copy(&self.config.qemu.rootfs_path, &vm_rootfs_path)
             .await
             .map_err(|e| ApiError::VmError(format!("Failed to copy rootfs: {}", e)))?;
@@ -365,7 +367,7 @@ impl VmManager {
 
         // Build kernel command line
         let ssh_key_arg = ssh_public_key
-            .map(|k| format!(" lia.ssh_key={}", k.replace(' ', "+")))
+            .map(|k| format!(" lia.ssh_key={}", k.replace(' ', "^")))
             .unwrap_or_default();
 
         let kernel_cmdline = format!(
@@ -437,10 +439,7 @@ impl VmManager {
             .arg(format!("file:{}", log_path.display()));
 
         // Daemonize and create PID file
-        qemu_cmd
-            .arg("-daemonize")
-            .arg("-pidfile")
-            .arg(&pid_file);
+        qemu_cmd.arg("-daemonize").arg("-pidfile").arg(&pid_file);
 
         // Configure stdio
         qemu_cmd
@@ -495,7 +494,10 @@ impl VmManager {
         };
 
         // Store VM info
-        self.vms.write().await.insert(vm_id.clone(), vm_info.clone());
+        self.vms
+            .write()
+            .await
+            .insert(vm_id.clone(), vm_info.clone());
 
         Ok(vm_info)
     }
@@ -549,9 +551,10 @@ impl VmManager {
                 let content = tokio::fs::read_to_string(pid_file)
                     .await
                     .map_err(|e| ApiError::VmError(format!("Failed to read PID file: {}", e)))?;
-                let pid: u32 = content.trim().parse().map_err(|e| {
-                    ApiError::VmError(format!("Failed to parse PID: {}", e))
-                })?;
+                let pid: u32 = content
+                    .trim()
+                    .parse()
+                    .map_err(|e| ApiError::VmError(format!("Failed to parse PID: {}", e)))?;
                 return Ok(pid);
             }
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

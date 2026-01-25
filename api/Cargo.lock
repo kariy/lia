@@ -46,6 +46,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
 
 [[package]]
+name = "api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "axum-extra",
+ "base64 0.21.7",
+ "chrono",
+ "config",
+ "dotenvy",
+ "futures",
+ "hyper 0.14.32",
+ "hyperlocal",
+ "lazy_static",
+ "libc",
+ "nix 0.28.0",
+ "rand",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "ssh2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tokio-vsock",
+ "tower 0.4.13",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "vsock",
+]
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2915,44 +2953,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "vm-api"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "axum-extra",
- "base64 0.21.7",
- "chrono",
- "config",
- "dotenvy",
- "futures",
- "hyper 0.14.32",
- "hyperlocal",
- "lazy_static",
- "libc",
- "nix 0.28.0",
- "rand",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sqlx",
- "ssh2",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-util",
- "tokio-vsock",
- "tower 0.4.13",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "vsock",
-]
 
 [[package]]
 name = "vsock"

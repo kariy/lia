@@ -104,6 +104,7 @@ impl VsockRelay {
         // Spawn reader task
         let ws_registry_clone = ws_registry.clone();
         tokio::spawn(async move {
+            tracing::info!("vsock reader task started for task {}", task_id);
             let mut line = String::new();
             loop {
                 line.clear();
@@ -113,34 +114,43 @@ impl VsockRelay {
                         tracing::info!("vsock connection closed for task {}", task_id);
                         break;
                     }
-                    Ok(_) => {
-                        if let Ok(msg) = serde_json::from_str::<VsockMessage>(&line) {
-                            match msg {
-                                VsockMessage::Output { data } => {
-                                    let ws_msg = WsMessage::Output {
-                                        data,
-                                        timestamp: chrono::Utc::now().timestamp_millis(),
-                                    };
-                                    ws_registry_clone.broadcast(task_id, ws_msg).await;
+                    Ok(n) => {
+                        tracing::debug!("vsock received {} bytes for task {}: {}", n, task_id, line.trim());
+                        match serde_json::from_str::<VsockMessage>(&line) {
+                            Ok(msg) => {
+                                match msg {
+                                    VsockMessage::Output { data } => {
+                                        tracing::debug!("Broadcasting output for task {}", task_id);
+                                        let ws_msg = WsMessage::Output {
+                                            data,
+                                            timestamp: chrono::Utc::now().timestamp_millis(),
+                                        };
+                                        ws_registry_clone.broadcast(task_id, ws_msg).await;
+                                    }
+                                    VsockMessage::Exit { code } => {
+                                        tracing::info!("Task {} exited with code {}", task_id, code);
+                                        let ws_msg = WsMessage::Status {
+                                            status: crate::models::TaskStatus::Terminated,
+                                            exit_code: Some(code),
+                                        };
+                                        ws_registry_clone.broadcast(task_id, ws_msg).await;
+                                        break;
+                                    }
+                                    VsockMessage::Error { message } => {
+                                        tracing::error!("Sidecar error for task {}: {}", task_id, message);
+                                        let ws_msg = WsMessage::Error { message };
+                                        ws_registry_clone.broadcast(task_id, ws_msg).await;
+                                    }
+                                    VsockMessage::Heartbeat => {
+                                        tracing::debug!("Heartbeat received for task {}", task_id);
+                                    }
+                                    _ => {
+                                        tracing::debug!("Unknown message type for task {}", task_id);
+                                    }
                                 }
-                                VsockMessage::Exit { code } => {
-                                    let ws_msg = WsMessage::Status {
-                                        status: crate::models::TaskStatus::Terminated,
-                                        exit_code: Some(code),
-                                    };
-                                    ws_registry_clone.broadcast(task_id, ws_msg).await;
-                                    break;
-                                }
-                                VsockMessage::Error { message } => {
-                                    tracing::error!("Sidecar error for task {}: {}", task_id, message);
-                                    // Broadcast error to WebSocket clients
-                                    let ws_msg = WsMessage::Error { message };
-                                    ws_registry_clone.broadcast(task_id, ws_msg).await;
-                                }
-                                VsockMessage::Heartbeat => {
-                                    // Heartbeat received, no action needed
-                                }
-                                _ => {}
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to parse vsock message for task {}: {} (raw: {})", task_id, e, line.trim());
                             }
                         }
                     }
